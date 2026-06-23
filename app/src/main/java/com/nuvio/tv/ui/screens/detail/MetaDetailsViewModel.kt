@@ -90,6 +90,7 @@ class MetaDetailsViewModel @Inject constructor(
     private val playerSettingsDataStore: PlayerSettingsDataStore,
     private val watchedSeriesStateHolder: com.nuvio.tv.data.local.WatchedSeriesStateHolder,
     val posterOptions: com.nuvio.tv.ui.components.posteroptions.PosterOptionsController,
+    private val streamPrewarmManager: com.nuvio.tv.core.player.StreamPrewarmManager,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
     private val itemId: String = savedStateHandle["itemId"] ?: ""
@@ -152,7 +153,54 @@ class MetaDetailsViewModel @Inject constructor(
         observeBlurUnwatchedEpisodes()
         observeShowFullReleaseDate()
         observeHideUnreleasedContent()
+        observeStreamPrewarm()
         loadMeta()
+    }
+
+    private data class PrewarmTarget(
+        val type: String,
+        val videoId: String,
+        val season: Int?,
+        val episode: Int?,
+    )
+
+    private fun computePrewarmTarget(state: MetaDetailsUiState): PrewarmTarget? {
+        if (state.isLoading) return null
+        val meta = state.meta ?: return null
+        val isSeries = meta.type == ContentType.SERIES || meta.type == ContentType.TV ||
+            meta.apiType in listOf("series", "tv")
+        return if (isSeries) {
+            val nextToWatch = state.nextToWatch ?: return null
+            val videoId = nextToWatch.nextVideoId?.takeIf { it.isNotBlank() } ?: return null
+            PrewarmTarget("series", videoId, nextToWatch.nextSeason, nextToWatch.nextEpisode)
+        } else {
+            val videoId = meta.id.takeIf { it.isNotBlank() } ?: return null
+            PrewarmTarget("movie", videoId, null, null)
+        }
+    }
+
+    /**
+     * Fase A prewarm: once the detail content (and, for series, the next episode
+     * to watch) is known, ask [StreamPrewarmManager] to pre-resolve the auto-play
+     * top stream so playback starts instantly. The manager itself is a no-op
+     * unless the user has "reuse last link" + auto-play enabled.
+     */
+    private fun observeStreamPrewarm() {
+        viewModelScope.launch {
+            var lastKey: String? = null
+            uiState.collect { state ->
+                val target = computePrewarmTarget(state) ?: return@collect
+                val key = "${target.type}|${target.videoId}"
+                if (key == lastKey) return@collect
+                lastKey = key
+                streamPrewarmManager.prewarm(
+                    type = target.type,
+                    videoId = target.videoId,
+                    season = target.season,
+                    episode = target.episode,
+                )
+            }
+        }
     }
 
     private fun observeHideUnreleasedContent() {
@@ -2625,5 +2673,6 @@ class MetaDetailsViewModel @Inject constructor(
         idleTimerJob?.cancel()
         trailerFetchJob?.cancel()
         nextToWatchJob?.cancel()
+        streamPrewarmManager.cancel()
     }
 }
