@@ -178,7 +178,9 @@ android {
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("release")
+            // Fork: sign debug builds with the auto-generated debug keystore so CI
+            // does not require the upstream release keystore (../nuviotv.jks).
+            signingConfig = signingConfigs.getByName("debug")
             isDebuggable = false
             isMinifyEnabled = false
 
