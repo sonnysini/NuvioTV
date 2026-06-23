@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Language
@@ -89,6 +90,7 @@ internal fun LazyListScope.autoPlaySettingsItems(
     onSetNextEpisodeThresholdMinutesBeforeEnd: (Float) -> Unit,
     onSetStreamAutoPlayTimeoutSeconds: (Int) -> Unit,
     onSetReuseLastLinkEnabled: (Boolean) -> Unit,
+    onSetStreamPrewarmEnabled: (Boolean) -> Unit,
     onSetStillWatchingEnabled: (Boolean) -> Unit,
     onSetStillWatchingEpisodeThreshold: (Int) -> Unit,
     onItemFocused: () -> Unit = {}
@@ -123,6 +125,17 @@ internal fun LazyListScope.autoPlaySettingsItems(
                 onFocused = onItemFocused
             )
         }
+    }
+
+    item(key = "autoplay_prewarm") {
+        ToggleSettingsItem(
+            icon = Icons.Default.Bolt,
+            title = stringResource(R.string.autoplay_prewarm),
+            subtitle = stringResource(R.string.autoplay_prewarm_sub),
+            isChecked = playerSettings.streamPrewarmEnabled,
+            onCheckedChange = onSetStreamPrewarmEnabled,
+            onFocused = onItemFocused
+        )
     }
 
     item(key = "autoplay_mode") {

@@ -493,6 +493,10 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setStreamReuseLastLinkEnabled(enabled)
     }
 
+    suspend fun setStreamPrewarmEnabled(enabled: Boolean) {
+        playerSettingsDataStore.setStreamPrewarmEnabled(enabled)
+    }
+
     suspend fun setStreamReuseLastLinkCacheHours(hours: Int) {
         playerSettingsDataStore.setStreamReuseLastLinkCacheHours(hours)
     }

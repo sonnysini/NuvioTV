@@ -271,6 +271,7 @@ data class PlayerSettings(
     val nextEpisodeThresholdMinutesBeforeEnd: Float = 2f,
     val streamReuseLastLinkEnabled: Boolean = false,
     val streamReuseLastLinkCacheHours: Int = 24,
+    val streamPrewarmEnabled: Boolean = true,
     val externalPlayerForwardSubtitles: Boolean = false,
     val subtitleOrganizationMode: SubtitleOrganizationMode = SubtitleOrganizationMode.NONE,
 
@@ -513,6 +514,7 @@ class PlayerSettingsDataStore @Inject constructor(
     private val nextEpisodeThresholdMinutesBeforeEndKey = floatPreferencesKey("next_episode_threshold_minutes_before_end_v2")
     private val streamReuseLastLinkEnabledKey = booleanPreferencesKey("stream_reuse_last_link_enabled")
     private val streamReuseLastLinkCacheHoursKey = intPreferencesKey("stream_reuse_last_link_cache_hours")
+    private val streamPrewarmEnabledKey = booleanPreferencesKey("stream_prewarm_enabled")
     private val externalPlayerForwardSubtitlesKey = booleanPreferencesKey("external_player_forward_subtitles")
     private val subtitleOrganizationModeKey = stringPreferencesKey("subtitle_organization_mode")
 
@@ -886,6 +888,7 @@ class PlayerSettingsDataStore @Inject constructor(
                 ),
                 streamReuseLastLinkEnabled = prefs[streamReuseLastLinkEnabledKey] ?: false,
                 streamReuseLastLinkCacheHours = (prefs[streamReuseLastLinkCacheHoursKey] ?: 24).coerceIn(1, 168),
+                streamPrewarmEnabled = prefs[streamPrewarmEnabledKey] ?: true,
                 externalPlayerForwardSubtitles = prefs[externalPlayerForwardSubtitlesKey] ?: false,
                 subtitleOrganizationMode = parseSubtitleOrganizationMode(prefs[subtitleOrganizationModeKey]),
                 vodCacheEnabled = prefs[vodCacheEnabledKey] ?: PlayerSettings.DEFAULT_VOD_CACHE_ENABLED,
@@ -1268,6 +1271,12 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setStreamReuseLastLinkCacheHours(hours: Int) {
         store().edit { prefs ->
             prefs[streamReuseLastLinkCacheHoursKey] = hours.coerceIn(1, 168)
+        }
+    }
+
+    suspend fun setStreamPrewarmEnabled(enabled: Boolean) {
+        store().edit { prefs ->
+            prefs[streamPrewarmEnabledKey] = enabled
         }
     }
 

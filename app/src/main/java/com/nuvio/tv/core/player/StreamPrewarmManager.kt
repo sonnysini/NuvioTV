@@ -10,6 +10,7 @@ import com.nuvio.tv.domain.model.AddonStreams
 import com.nuvio.tv.domain.model.enabledAddons
 import com.nuvio.tv.domain.repository.AddonRepository
 import com.nuvio.tv.domain.repository.StreamRepository
+import com.nuvio.tv.ui.screens.player.PlayerPlaybackNetworking
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -89,10 +90,21 @@ class StreamPrewarmManager @Inject constructor(
         year: String?,
     ) {
         val settings = playerSettingsDataStore.playerSettings.first()
-        if (!settings.streamReuseLastLinkEnabled) return
+        if (!settings.streamPrewarmEnabled) return
 
+        val reuseEnabled = settings.streamReuseLastLinkEnabled
         val ttlMs = settings.streamReuseLastLinkCacheHours.coerceAtLeast(1) * 60L * 60L * 1000L
-        if (streamLinkCacheDataStore.getValid(cacheKey, ttlMs) != null) return
+
+        // Reuse path: a valid link is already cached, so the slow resolve is done.
+        // Still warm its connection/CDN edge (Fase B) so playback reaches first frame
+        // faster even when reusing a known-good link.
+        if (reuseEnabled) {
+            val cached = streamLinkCacheDataStore.getValid(cacheKey, ttlMs)
+            if (cached != null) {
+                PlayerPlaybackNetworking.warmConnection(cached.url, cached.headers)
+                return
+            }
+        }
 
         val installedAddons = addonRepository.getInstalledAddons().first().enabledAddons()
         if (installedAddons.isEmpty()) return
@@ -129,22 +141,28 @@ class StreamPrewarmManager @Inject constructor(
         if (!directDebridResolver.shouldResolveToPlayableStream(top)) return
 
         // Re-check: a real playback may have populated the cache while we fetched.
-        if (streamLinkCacheDataStore.getValid(cacheKey, ttlMs) != null) return
+        if (reuseEnabled && streamLinkCacheDataStore.getValid(cacheKey, ttlMs) != null) return
 
         when (val result = directDebridResolver.resolve(top, season, episode)) {
             is DirectDebridResolveResult.Success -> {
                 if (result.url.isNotBlank()) {
-                    streamLinkCacheDataStore.save(
-                        contentKey = cacheKey,
-                        url = result.url,
-                        streamName = top.name.orEmpty(),
-                        headers = null,
-                        filename = result.filename,
-                        videoSize = result.videoSize,
-                        bingeGroup = top.behaviorHints?.bingeGroup,
-                        contentLanguage = contentLanguage,
-                        year = year,
-                    )
+                    // Fase A: persist the resolved link for instant "reuse last link" auto-play.
+                    if (reuseEnabled) {
+                        streamLinkCacheDataStore.save(
+                            contentKey = cacheKey,
+                            url = result.url,
+                            streamName = top.name.orEmpty(),
+                            headers = null,
+                            filename = result.filename,
+                            videoSize = result.videoSize,
+                            bingeGroup = top.behaviorHints?.bingeGroup,
+                            contentLanguage = contentLanguage,
+                            year = year,
+                        )
+                    }
+                    // Fase B: open + warm the resolved connection / CDN edge so the real
+                    // player reaches first frame faster. No ExoPlayer/decoder involved.
+                    PlayerPlaybackNetworking.warmConnection(result.url)
                     Log.d(TAG, "prewarmed $cacheKey via debrid (${top.name})")
                 }
             }
