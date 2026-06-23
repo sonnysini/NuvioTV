@@ -1,0 +1,42 @@
+name: Debug Build (fork)
+
+# Builds an unsigned/debug APK of the `full` flavor for sideloading and
+# iteration on the prewarm fork. Runs entirely on GitHub-hosted runners so
+# nothing is built locally. Triggered manually or on pushes to work branches.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "feature/**"
+
+concurrency:
+  group: debug-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build full debug APK
+        run: ./gradlew :app:assembleFullDebug --stacktrace --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuviotv-full-debug
+          path: app/build/outputs/apk/full/debug/*.apk
+          if-no-files-found: error
