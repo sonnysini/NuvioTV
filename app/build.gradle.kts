@@ -100,8 +100,8 @@ android {
         applicationId = "com.nuvio.tv"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1028
-        versionName = "0.7.10-beta-prewarmBC"
+        versionCode = 1029
+        versionName = "0.7.10-beta-prewarmD"
 
         buildConfigField("String", "PARENTAL_GUIDE_API_URL", "\"${localProperties.getProperty("PARENTAL_GUIDE_API_URL", "")}\"")
         buildConfigField("String", "INTRODB_API_URL", "\"${localProperties.getProperty("INTRODB_API_URL", "")}\"")
@@ -309,7 +309,9 @@ android {
 androidComponents {
     onVariants(selector().withBuildType("debug")) { variant ->
         val isPlaystore = variant.productFlavors.any { it.second == "playstore" }
-        variant.applicationId.set(if (isPlaystore) "com.nuvio.appdebug" else "com.nuviodebug.com")
+        // Fork (NuvioMOD): dedicated package so the modded debug build always
+        // coexists with the official app and is clearly labelled on the launcher.
+        variant.applicationId.set(if (isPlaystore) "com.nuvio.appdebug" else "com.nuvio.mod")
     }
 }
 

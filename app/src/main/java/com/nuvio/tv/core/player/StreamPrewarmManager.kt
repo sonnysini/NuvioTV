@@ -4,6 +4,7 @@ import android.util.Log
 import com.nuvio.tv.core.debrid.DirectDebridResolveResult
 import com.nuvio.tv.core.debrid.DirectDebridResolver
 import com.nuvio.tv.core.network.NetworkResult
+import com.nuvio.tv.data.local.InternalPlayerEngine
 import com.nuvio.tv.data.local.PlayerSettingsDataStore
 import com.nuvio.tv.data.local.StreamLinkCacheDataStore
 import com.nuvio.tv.domain.model.AddonStreams
@@ -44,6 +45,7 @@ class StreamPrewarmManager @Inject constructor(
     private val directDebridResolver: DirectDebridResolver,
     private val streamLinkCacheDataStore: StreamLinkCacheDataStore,
     private val playerSettingsDataStore: PlayerSettingsDataStore,
+    private val playerDecoderWarmup: PlayerDecoderWarmup,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
@@ -78,6 +80,7 @@ class StreamPrewarmManager @Inject constructor(
         job?.cancel()
         job = null
         currentKey = null
+        playerDecoderWarmup.cancel()
     }
 
     private suspend fun prewarmInternal(
@@ -101,7 +104,7 @@ class StreamPrewarmManager @Inject constructor(
         if (reuseEnabled) {
             val cached = streamLinkCacheDataStore.getValid(cacheKey, ttlMs)
             if (cached != null) {
-                PlayerPlaybackNetworking.warmConnection(cached.url, cached.headers)
+                warmPlayback(cached.url, cached.headers, settings.internalPlayerEngine)
                 return
             }
         }
@@ -160,13 +163,32 @@ class StreamPrewarmManager @Inject constructor(
                             year = year,
                         )
                     }
-                    // Fase B: open + warm the resolved connection / CDN edge so the real
-                    // player reaches first frame faster. No ExoPlayer/decoder involved.
-                    PlayerPlaybackNetworking.warmConnection(result.url)
+                    // Warm the resolved link: decode the first frame on ExoPlayer
+                    // (Fase D) or just prime the connection/CDN on MPV (Fase B).
+                    warmPlayback(result.url, emptyMap(), settings.internalPlayerEngine)
                     Log.d(TAG, "prewarmed $cacheKey via debrid (${top.name})")
                 }
             }
             else -> Unit // NotCached / Stale / MissingApiKey / Error -> skip silently
+        }
+    }
+
+    /**
+     * Warms the resolved playback link. On the ExoPlayer engine this decodes the
+     * first frame on an off-screen surface (Fase D) so the hardware decoder is hot
+     * before play; on MPV it falls back to the lighter connection/CDN warm-up
+     * (Fase B), since warming an ExoPlayer decoder would not help the MPV pipeline
+     * and would needlessly occupy the stick's single hardware decoder.
+     */
+    private suspend fun warmPlayback(
+        url: String,
+        headers: Map<String, String>,
+        engine: InternalPlayerEngine,
+    ) {
+        if (engine == InternalPlayerEngine.EXOPLAYER) {
+            playerDecoderWarmup.warm(url, headers)
+        } else {
+            PlayerPlaybackNetworking.warmConnection(url, headers)
         }
     }
 
