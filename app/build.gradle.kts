@@ -100,8 +100,8 @@ android {
         applicationId = "com.nuvio.tv"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1029
-        versionName = "0.7.10-beta-prewarmD"
+        versionCode = 1030
+        versionName = "0.7.10-beta-prewarmD-v1sig"
 
         buildConfigField("String", "PARENTAL_GUIDE_API_URL", "\"${localProperties.getProperty("PARENTAL_GUIDE_API_URL", "")}\"")
         buildConfigField("String", "INTRODB_API_URL", "\"${localProperties.getProperty("INTRODB_API_URL", "")}\"")
@@ -168,6 +168,13 @@ android {
     }
 
     signingConfigs {
+        getByName("debug") {
+            // Fork: minSdk 24 makes AGP drop v1 (JAR) signing by default, but the
+            // Amazon Fire TV installer rejects v2-only APKs with a generic
+            // "App not installed". Force v1+v2 so sideloading works on Fire OS.
+            enableV1Signing = true
+            enableV2Signing = true
+        }
         create("release") {
             keyAlias = releaseKeyAliasValue
             keyPassword = releaseKeyPasswordValue
