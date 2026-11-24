@@ -1,0 +1,167 @@
+name: Fork sync + build
+
+# Personal fork of NuvioTV. Every day: take the newest official release tag,
+# replay the fork commits (branch FEATURE_BRANCH) on top of it, build a signed APK
+# and publish it as release "<upstream-tag>+sonny". If the patch no longer applies
+# the job fails (GitHub sends the failure e-mail) and nothing is published.
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if a release for the current upstream tag already exists
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-sync-build
+  cancel-in-progress: false
+
+env:
+  FEATURE_BRANCH: sonny/autoplay-priority
+  UPSTREAM: https://github.com/NuvioMedia/NuvioTV.git
+  FORK_APPLICATION_ID: com.nuvio.tv.sonny
+  FORK_APP_NAME: Nuvio Sonny
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out fork branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.FEATURE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Find newest upstream release
+        id: up
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch --quiet --force --no-recurse-submodules upstream 'refs/tags/*:refs/tags/*'
+          tag="$(git -c versionsort.suffix=-alpha -c versionsort.suffix=-beta -c versionsort.suffix=-rc \
+                   tag --sort=-v:refname \
+                 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$' | head -1)"
+          [ -n "$tag" ] || { echo "No upstream tag found" >&2; exit 1; }
+          fork_tag="${tag}+sonny"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "fork_tag=$fork_tag" >> "$GITHUB_OUTPUT"
+          case "$tag" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT";; *) echo "prerelease=false" >> "$GITHUB_OUTPUT";; esac
+          if gh release view "$fork_tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "${{ inputs.force }}" = "true" ]; then
+              gh release delete "$fork_tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "Release $fork_tag already exists, nothing to do."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Upstream: $tag -> $fork_tag"
+
+      - name: Replay fork commits on upstream release
+        if: steps.up.outputs.skip != 'true'
+        id: rebase
+        env:
+          TAG: ${{ steps.up.outputs.tag }}
+        run: |
+          git config user.name "fork-bot"
+          git config user.email "fork-bot@users.noreply.github.com"
+          upstream_tags=$(git tag -l | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$')
+          # Fork commits = reachable from the branch but from no upstream tag.
+          fork_commits=$(git rev-list --reverse HEAD --not $upstream_tags)
+          [ -n "$fork_commits" ] || { echo "No fork commits found" >&2; exit 1; }
+          first=$(echo "$fork_commits" | head -1)
+          old_base=$(git rev-parse "${first}^")
+          echo "Fork commits:"; git log --oneline --no-decorate $old_base..HEAD
+          if ! git rebase --onto "$TAG" "$old_base"; then
+            echo "::error::La patch del fork non si applica su $TAG: serve un aggiornamento manuale."
+            git rebase --abort || true
+            exit 1
+          fi
+          git format-patch --stdout "$TAG"..HEAD > fork.patch
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Fork identity (package, name, updater)
+        if: steps.up.outputs.skip != 'true'
+        run: |
+          sed -i -E 's/applicationId = "com\.nuvio\.tv"/applicationId = "'"$FORK_APPLICATION_ID"'"/' app/build.gradle.kts
+          grep -q "applicationId = \"$FORK_APPLICATION_ID\"" app/build.gradle.kts
+          sed -i -E 's#<string name="app_name">[^<]*</string>#<string name="app_name">'"$FORK_APP_NAME"'</string>#' app/src/main/res/values/strings.xml
+          # In-app updater reads releases from this fork instead of the official repo.
+          sed -i -E 's/"GITHUB_OWNER", "\\"NuvioMedia\\""/"GITHUB_OWNER", "\\"sonnysini\\""/' app/build.gradle.kts
+          grep -q 'GITHUB_OWNER", "\\"sonnysini' app/build.gradle.kts
+          git diff --stat
+
+      - name: Set up Java
+        if: steps.up.outputs.skip != 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        if: steps.up.outputs.skip != 'true'
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Configure release properties
+        if: steps.up.outputs.skip != 'true'
+        env:
+          LOCAL_PROPERTIES_BASE64: ${{ secrets.FORK_LOCAL_PROPERTIES_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets.FORK_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+        run: |
+          ks="${RUNNER_TEMP}/fork-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ks"
+          printf '%s' "$LOCAL_PROPERTIES_BASE64" | base64 --decode > local.properties
+          {
+            echo
+            echo "DOVI_NATIVE_ENABLED=true"
+            echo "DOVI_EXTRACTOR_HOOK_READY=true"
+            echo "DOVI_ENABLE_REAL_LINK=true"
+            echo "DOVI_LIBDOVI_PREBUILT_ROOT=DV7/libdovi"
+            echo "NUVIO_RELEASE_STORE_FILE=$ks"
+            echo "NUVIO_RELEASE_KEY_ALIAS=$KEY_ALIAS"
+            echo "NUVIO_RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+            echo "NUVIO_RELEASE_STORE_PASSWORD=$STORE_PASSWORD"
+          } >> local.properties
+
+      - name: Test fork feature and build APKs
+        if: steps.up.outputs.skip != 'true'
+        run: >
+          ./gradlew
+          :app:testFullReleaseUnitTest
+          --tests 'com.nuvio.tv.core.player.AutoPlayPriorityTest'
+          --tests 'com.nuvio.tv.core.player.StreamAutoPlaySelectorTest'
+          :app:assembleFullRelease --stacktrace
+
+      - name: Publish release
+        if: steps.up.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.up.outputs.tag }}
+          FORK_TAG: ${{ steps.up.outputs.fork_tag }}
+          PRERELEASE: ${{ steps.up.outputs.prerelease }}
+          HEAD_SHA: ${{ steps.rebase.outputs.head }}
+        run: |
+          mapfile -t apks < <(find app/build/outputs/apk/full/release -maxdepth 1 -name '*.apk' | sort)
+          (( ${#apks[@]} > 0 )) || { echo "No APK produced" >&2; exit 1; }
+          cat > notes.md <<EOF
+          Build personale di NuvioTV **$TAG** (ufficiale) + patch del fork.
+
+          - Package: \`$FORK_APPLICATION_ID\` (convive con l'app ufficiale)
+          - Patch: priorità fonti a cascata per l'autoplay (Impostazioni → Riproduzione → Selezione stream → Priorità fonti)
+          - Sorgente: tag upstream \`$TAG\` + \`fork.patch\` allegato (commit ricostruito \`$HEAD_SHA\`), licenza GPL-3.0
+          EOF
+          sed -i 's/^          //' notes.md
+          args=("$FORK_TAG" --target fork-ci --title "NuvioTV $FORK_TAG" --notes-file notes.md)
+          [ "$PRERELEASE" = "true" ] && args+=(--prerelease) || args+=(--latest)
+          gh release create "${args[@]}" "${apks[@]}" fork.patch
