@@ -45,7 +45,10 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -537,7 +540,22 @@ private fun PrefetchCard(
             }
             if (ready != null && ready.badges.isNotEmpty()) {
                 // File size is in the title line, so it is never cut off by many badges.
-                StreamBadgeChips(badges = ready.badges, showFileSizeBadge = false, animate = true)
+                // StreamBadgeChips fills the available width; measured unbounded here so the
+                // pill is as wide as its badges (capped by the column's max width).
+                StreamBadgeChips(
+                    badges = ready.badges,
+                    showFileSizeBadge = false,
+                    animate = true,
+                    modifier = Modifier
+                        .layout { measurable, constraints ->
+                            val placeable = measurable.measure(
+                                constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity)
+                            )
+                            val width = placeable.width.coerceAtMost(constraints.maxWidth)
+                            layout(width, placeable.height) { placeable.place(0, 0) }
+                        }
+                        .clipToBounds()
+                )
             }
         }
     }
