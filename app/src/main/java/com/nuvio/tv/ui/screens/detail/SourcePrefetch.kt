@@ -4,6 +4,8 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -15,19 +17,47 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
@@ -37,7 +67,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.tv.material3.Border
+import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Icon
+import androidx.tv.material3.IconButton
+import androidx.tv.material3.IconButtonDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.core.player.AutoPlayPriority
@@ -65,6 +99,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -78,8 +113,9 @@ import kotlinx.coroutines.withContext
  * While the detail page is open the source search for the Play target starts in the
  * background, with exactly the parameters the stream screen will use, so the stream
  * screen joins the running (or finished) search of [StreamRepository] instead of
- * starting a new one. Next to the hero actions a small line shows the progress and the
- * source autoplay would pick, with the native stream badges. Only when autoplay is on.
+ * starting a new one. A compact card in the top-right corner shows the progress and the
+ * source autoplay would pick, with the native stream badges; then it folds into a round
+ * button next to the hero actions. Only when autoplay is on.
  * Leaving the page drops a search that is still running.
  *
  * Kept in its own file so upstream rebases stay simple.
@@ -283,12 +319,28 @@ class SourcePrefetchViewModel @Inject constructor(
     }
 }
 
-private val PrefetchTextShadow = Shadow(color = Color.Black.copy(alpha = 0.7f), offset = Offset(0f, 1f), blurRadius = 6f)
 
-/**
- * The status line next to the hero actions. Not focusable: it never changes D-pad
- * navigation of the detail page.
- */
+// ---------------------------------------------------------------------------------------------
+// UI: a compact card in the top-right corner shows the search and the picked source. A moment
+// after the pick the card folds into a circle and flies next to the hero actions, where it
+// becomes a round action button like the others. Focusing that button opens the card again.
+// The card lives in a non-focusable popup, so it never changes the D-pad navigation of the page.
+// ---------------------------------------------------------------------------------------------
+
+private val CardHeight = 68.dp
+private val CardMarginEnd = 32.dp
+private val CardMarginTop = 20.dp
+private val CardGlass = Color(0xFF1C1C1E).copy(alpha = 0.72f)
+private val CheckGreen = Color(0xFF4CAF50)
+private const val READY_HOLD_MS = 2500L
+private const val COLLAPSE_MS = 350
+private const val FLY_MS = 600
+private const val NOT_FOUND_HOLD_MS = 3000L
+
+private enum class Phase { Card, Collapse, Fly, Landed, Gone }
+
+private fun mix(a: Float, b: Float, t: Float) = a + (b - a) * t
+
 @Composable
 fun SourcePrefetchInfo(
     type: String,
@@ -306,81 +358,332 @@ fun SourcePrefetchInfo(
     val state by viewModel.state.collectAsStateWithLifecycle()
     if (!enabled) return
 
-    AnimatedContent(
-        targetState = state,
-        contentKey = { it::class },
-        transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(200)) },
-        modifier = modifier,
-        label = "source_prefetch"
-    ) { current ->
-        when (current) {
-            SourcePrefetchState.Hidden -> Box(Modifier.size(0.dp))
-            is SourcePrefetchState.Searching -> PrefetchLine(
-                indicator = { PrefetchSpinner() },
-                title = "Cerco fonti…",
-                subtitle = current.level?.let { "Livello $it" }
-            )
-            is SourcePrefetchState.Ready -> PrefetchLine(
-                indicator = { PrefetchCheck() },
-                title = listOfNotNull(
-                    current.sourceName,
-                    current.fileSizeBytes?.takeIf { current.showFileSizeBadge }?.let(::formatFileSize)
-                ).joinToString("  ·  "),
-                subtitle = null,
-                badges = current
-            )
-            SourcePrefetchState.NotFound -> PrefetchLine(
-                indicator = null,
-                title = "Nessuna fonte per l'autoplay",
-                subtitle = null
-            )
+    val targetKey = "$type|$videoId|$season|$episode"
+    // Survives a round trip to the player: coming back shows the button straight away.
+    var landedKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var phase by remember(targetKey) {
+        mutableStateOf(if (landedKey == targetKey) Phase.Landed else Phase.Card)
+    }
+    val progress = remember(targetKey) { Animatable(0f) }
+    var lastReady by remember(targetKey) { mutableStateOf<SourcePrefetchState.Ready?>(null) }
+    LaunchedEffect(state) {
+        (state as? SourcePrefetchState.Ready)?.let { lastReady = it }
+    }
+
+    // Keyed on the kind of state, not the value: a Ready that only refreshes its badges must
+    // not restart (and freeze) the fold animation.
+    LaunchedEffect(targetKey, state::class) {
+        when (state) {
+            is SourcePrefetchState.Ready -> if (phase == Phase.Card) {
+                delay(READY_HOLD_MS)
+                phase = Phase.Collapse
+                progress.snapTo(0f)
+                progress.animateTo(1f, tween(COLLAPSE_MS, easing = FastOutSlowInEasing))
+                phase = Phase.Fly
+                progress.snapTo(0f)
+                progress.animateTo(1f, tween(FLY_MS, easing = FastOutSlowInEasing))
+                phase = Phase.Landed
+                landedKey = targetKey
+            }
+            SourcePrefetchState.NotFound -> if (phase == Phase.Card) {
+                delay(NOT_FOUND_HOLD_MS)
+                phase = Phase.Gone
+            }
+            is SourcePrefetchState.Searching -> if (phase == Phase.Gone) phase = Phase.Card
+            SourcePrefetchState.Hidden -> Unit
+        }
+    }
+
+    var slotBounds by remember { mutableStateOf<Rect?>(null) }
+    var cardWidthPx by remember(targetKey) { mutableStateOf(0) }
+    var buttonFocused by remember { mutableStateOf(false) }
+    val landed = phase == Phase.Landed && lastReady != null
+
+    // The slot at the end of the hero actions: invisible and not focusable until the circle lands.
+    PrefetchButton(
+        visible = landed,
+        onFocusChanged = { buttonFocused = it },
+        modifier = modifier.onGloballyPositioned { slotBounds = it.boundsInWindow() }
+    )
+
+    val showOverlay = when (phase) {
+        Phase.Card -> state !is SourcePrefetchState.Hidden
+        Phase.Collapse, Phase.Fly -> true
+        Phase.Landed -> buttonFocused
+        Phase.Gone -> false
+    }
+    if (!showOverlay) return
+
+    val configuration = LocalConfiguration.current
+    Popup(
+        popupPositionProvider = WindowOriginPositionProvider,
+        properties = PopupProperties(focusable = false, clippingEnabled = false)
+    ) {
+        Box(Modifier.size(configuration.screenWidthDp.dp, configuration.screenHeightDp.dp)) {
+            when (phase) {
+                Phase.Card -> AnimatedContent(
+                    targetState = state,
+                    contentKey = { it::class },
+                    transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(200)) },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = CardMarginTop, end = CardMarginEnd)
+                        .onSizeChanged { cardWidthPx = it.width },
+                    label = "source_prefetch_card"
+                ) { current -> CardFor(current) }
+
+                Phase.Collapse, Phase.Fly -> FoldingCircle(
+                    phase = phase,
+                    t = progress.value,
+                    slot = slotBounds,
+                    ready = lastReady,
+                    cardWidthPx = cardWidthPx
+                )
+
+                Phase.Landed -> {
+                    val slot = slotBounds
+                    val ready = lastReady
+                    if (slot != null && ready != null) {
+                        ReopenedCard(slot = slot, ready = ready)
+                    }
+                }
+
+                Phase.Gone -> Unit
+            }
         }
     }
 }
 
+private object WindowOriginPositionProvider : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize
+    ): IntOffset = IntOffset.Zero
+}
+
 @Composable
-private fun PrefetchLine(
+private fun CardFor(state: SourcePrefetchState) {
+    when (state) {
+        SourcePrefetchState.Hidden -> Box(Modifier.size(0.dp))
+        is SourcePrefetchState.Searching -> PrefetchCard(
+            indicator = { PrefetchSpinner() },
+            title = "Cerco fonti…",
+            subtitle = state.level?.let { "Livello $it" }
+        )
+        is SourcePrefetchState.Ready -> PrefetchCard(
+            indicator = { CheckBubble(fill = CheckGreen, size = 28.dp) },
+            title = readyTitle(state),
+            subtitle = null,
+            ready = state
+        )
+        SourcePrefetchState.NotFound -> PrefetchCard(
+            indicator = null,
+            title = "Nessuna fonte per l'autoplay",
+            subtitle = null
+        )
+    }
+}
+
+private fun readyTitle(state: SourcePrefetchState.Ready): String = listOfNotNull(
+    state.sourceName,
+    state.fileSizeBytes?.takeIf { state.showFileSizeBadge }?.let(::formatFileSize)
+).joinToString("  ·  ")
+
+@Composable
+private fun PrefetchCard(
     indicator: (@Composable () -> Unit)?,
     title: String,
     subtitle: String?,
-    badges: SourcePrefetchState.Ready? = null
+    ready: SourcePrefetchState.Ready? = null,
+    modifier: Modifier = Modifier,
+    background: Color = CardGlass,
+    startPadding: Dp = NuvioTheme.spacing.lg,
+    textAlpha: Float = 1f
 ) {
     Row(
+        modifier = modifier
+            .height(CardHeight)
+            .clip(RoundedCornerShape(NuvioTheme.radii.xl))
+            .background(background)
+            .padding(start = startPadding, end = NuvioTheme.spacing.xl),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm)
+        horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
     ) {
         indicator?.invoke()
         Column(
-            modifier = Modifier.widthIn(max = 540.dp),
+            modifier = Modifier
+                .widthIn(max = 560.dp)
+                .graphicsLayer { alpha = textAlpha },
             verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xxs)
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    shadow = PrefetchTextShadow
-                ),
-                color = Color.White,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = NuvioTheme.colors.TextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             if (subtitle != null) {
                 Text(
                     text = subtitle,
-                    style = MaterialTheme.typography.labelSmall.copy(shadow = PrefetchTextShadow),
-                    color = Color.White.copy(alpha = 0.72f),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NuvioTheme.colors.TextSecondary,
                     maxLines = 1
                 )
             }
-            if (badges != null && badges.badges.isNotEmpty()) {
+            if (ready != null && ready.badges.isNotEmpty()) {
                 // File size is in the title line, so it is never cut off by many badges.
-                StreamBadgeChips(
-                    badges = badges.badges,
-                    showFileSizeBadge = false,
-                    animate = true
-                )
+                StreamBadgeChips(badges = ready.badges, showFileSizeBadge = false, animate = true)
             }
         }
+    }
+}
+
+/**
+ * The card folding into a circle (Collapse) and the circle flying into the hero slot (Fly).
+ * Green only while the card is open: it fades away while folding, so the circle lands with
+ * the look of the other hero icons.
+ */
+@Composable
+private fun FoldingCircle(
+    phase: Phase,
+    t: Float,
+    slot: Rect?,
+    ready: SourcePrefetchState.Ready?,
+    cardWidthPx: Int
+) {
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val buttonBg = NuvioTheme.colors.BackgroundCard
+    val cornerPx = with(density) { NuvioTheme.radii.xl.toPx() }
+    val startPad = NuvioTheme.spacing.lg
+    with(density) {
+        val screenW = configuration.screenWidthDp.dp.toPx()
+        val cardH = CardHeight.toPx()
+        val cardRight = screenW - CardMarginEnd.toPx()
+        val cardTop = CardMarginTop.toPx()
+        val startCenterX = cardRight - cardH / 2f
+        val startCenterY = cardTop + cardH / 2f
+
+        if (phase == Phase.Collapse) {
+            // The card keeps its right edge and shrinks to a circle; text fades out first,
+            // the check slides to the centre and loses its green.
+            val fullW = if (cardWidthPx > 0) cardWidthPx.toFloat() else cardH
+            val w = mix(fullW, cardH, t)
+            val radius = mix(cornerPx, cardH / 2f, t)
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset((cardRight - w).toInt(), cardTop.toInt()) }
+                    .size(w.toDp(), CardHeight)
+                    .clip(RoundedCornerShape(radius.toDp()))
+                    .background(CardGlass)
+            ) {
+                PrefetchCard(
+                    indicator = { CheckBubble(fill = lerp(CheckGreen, Color.Transparent, t), size = 28.dp) },
+                    title = ready?.let(::readyTitle).orEmpty(),
+                    subtitle = null,
+                    ready = ready,
+                    background = Color.Transparent,
+                    startPadding = mix(startPad.toPx(), (cardH - 28.dp.toPx()) / 2f, t).toDp(),
+                    textAlpha = (1f - t * 2.5f).coerceIn(0f, 1f),
+                    modifier = Modifier.wrapContentWidth(Alignment.Start, unbounded = true)
+                )
+            }
+        } else {
+            val tx = slot?.center?.x ?: startCenterX
+            val ty = slot?.center?.y ?: startCenterY
+            val size = mix(cardH, NuvioTheme.spacing.xxxl.toPx(), t)
+            val cx = mix(startCenterX, tx, t)
+            val cy = mix(startCenterY, ty, t)
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset((cx - size / 2f).toInt(), (cy - size / 2f).toInt()) }
+                    .size(size.toDp())
+                    .clip(CircleShape)
+                    .background(lerp(CardGlass, buttonBg, t)),
+                contentAlignment = Alignment.Center
+            ) {
+                CheckBubble(fill = Color.Transparent, size = mix(28f, 34f, t).dp)
+            }
+        }
+    }
+}
+
+/** Opened again while the landed button has focus: grows to the right of the button. */
+@Composable
+private fun ReopenedCard(slot: Rect, ready: SourcePrefetchState.Ready) {
+    val density = LocalDensity.current
+    val gap = with(density) { NuvioTheme.spacing.md.toPx() }
+    val cardH = with(density) { CardHeight.toPx() }
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { reveal.animateTo(1f, tween(260, easing = FastOutSlowInEasing)) }
+    PrefetchCard(
+        indicator = null,
+        title = readyTitle(ready),
+        subtitle = null,
+        ready = ready,
+        modifier = Modifier
+            .offset { IntOffset((slot.right + gap).toInt(), (slot.center.y - cardH / 2f).toInt()) }
+            .graphicsLayer {
+                alpha = reveal.value
+                scaleX = mix(0.85f, 1f, reveal.value)
+                transformOrigin = TransformOrigin(0f, 0.5f)
+            }
+    )
+}
+
+/** The landed button, styled like the hero's own round action buttons. */
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun PrefetchButton(visible: Boolean, onFocusChanged: (Boolean) -> Unit, modifier: Modifier) {
+    IconButton(
+        onClick = {},
+        modifier = modifier
+            .size(NuvioTheme.spacing.xxxl)
+            .graphicsLayer { alpha = if (visible) 1f else 0f }
+            .focusProperties {
+                canFocus = visible
+                up = FocusRequester.Cancel
+            }
+            .onFocusChanged { onFocusChanged(it.isFocused) },
+        colors = IconButtonDefaults.colors(
+            containerColor = NuvioTheme.colors.BackgroundCard,
+            focusedContainerColor = NuvioTheme.colors.Secondary,
+            contentColor = NuvioTheme.colors.TextPrimary,
+            focusedContentColor = NuvioTheme.colors.OnSecondary
+        ),
+        border = IconButtonDefaults.border(
+            focusedBorder = Border(
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
+                shape = CircleShape
+            )
+        ),
+        shape = IconButtonDefaults.shape(shape = CircleShape)
+    ) {
+        Icon(
+            imageVector = Icons.Default.Check,
+            contentDescription = "Fonte pronta",
+            modifier = Modifier.size(NuvioTheme.spacing.xl)
+        )
+    }
+}
+
+@Composable
+private fun CheckBubble(fill: Color, size: Dp) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .background(fill, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.Check,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(size * 0.72f)
+        )
     }
 }
 
@@ -402,8 +705,8 @@ private fun PrefetchSpinner() {
         animationSpec = infiniteRepeatable(tween(durationMillis = 900, easing = LinearEasing)),
         label = "prefetch_rotation"
     )
-    Canvas(modifier = Modifier.size(18.dp)) {
-        val stroke = 2.5.dp.toPx()
+    Canvas(modifier = Modifier.size(24.dp)) {
+        val stroke = 3.dp.toPx()
         drawCircle(color = Color.White.copy(alpha = 0.25f), style = Stroke(width = stroke))
         drawArc(
             color = Color.White,
@@ -415,19 +718,3 @@ private fun PrefetchSpinner() {
     }
 }
 
-@Composable
-private fun PrefetchCheck() {
-    Box(
-        modifier = Modifier
-            .size(18.dp)
-            .background(Color.White, CircleShape),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.Check,
-            contentDescription = null,
-            tint = Color.Black,
-            modifier = Modifier.size(12.dp)
-        )
-    }
-}
