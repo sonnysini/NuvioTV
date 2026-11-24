@@ -190,6 +190,8 @@ internal fun PlaybackStreamSelectionSection(
                 onClick = { onOpenDialog(PlaybackDialog.STREAM_AUTO_PLAY_PLUGINS) }
             )
         }
+
+        AutoPlayPriorityRow() // fork (sonnysini)
     }
 
     val timeoutSeconds = settings.streamAutoPlayTimeoutSeconds

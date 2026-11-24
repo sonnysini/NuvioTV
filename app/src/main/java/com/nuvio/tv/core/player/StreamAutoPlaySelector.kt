@@ -149,6 +149,18 @@ object StreamAutoPlaySelector {
 
         if (mode == StreamAutoPlayMode.MANUAL) return null
 
+        // Fork (sonnysini): the mode pick below runs once per priority level, see AutoPlayPriority.
+        return AutoPlayPriority.cascade(candidateStreams) { levelStreams ->
+            pickByMode(levelStreams, mode, regexPattern)
+        }
+    }
+
+    private fun pickByMode(
+        candidateStreams: List<Stream>,
+        mode: StreamAutoPlayMode,
+        regexPattern: String
+    ): Stream? {
+        if (candidateStreams.isEmpty()) return null
         return when (mode) {
             StreamAutoPlayMode.MANUAL -> null
             StreamAutoPlayMode.FIRST_STREAM -> candidateStreams.firstOrNull { isPlayable(it) }

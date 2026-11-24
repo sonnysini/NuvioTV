@@ -645,7 +645,11 @@ class StreamScreenViewModel @Inject constructor(
                 // configured timeout has elapsed. This gives slower addons a
                 // chance to return higher-quality streams before the selector
                 // picks from whatever is available.
-                val shouldAutoSelect = !autoPlayHandledForSession && !resolvedAutoPlayTarget && isAllLoaded
+                // Fork (sonnysini): with priority levels a pick can start before every
+                // source answered, once all sources of its level and above responded.
+                val priorityEarlyPick = !isAllLoaded && com.nuvio.tv.core.player.AutoPlayPriority.isActive
+                val shouldAutoSelect = !autoPlayHandledForSession && !resolvedAutoPlayTarget &&
+                    (isAllLoaded || priorityEarlyPick)
                 val selectedAutoPlayStream = if (earlyBingeGroupMatch != null) {
                     earlyBingeGroupMatch
                 } else if (!shouldAutoSelect) {
@@ -661,7 +665,15 @@ class StreamScreenViewModel @Inject constructor(
                         selectedPlugins = playerSettings.streamAutoPlaySelectedPlugins,
                         preferredBingeGroup = persistedBingeGroup,
                         preferBingeGroupInSelection = persistedBingeGroup != null
-                    )
+                    )?.takeIf { pick ->
+                        isAllLoaded || run {
+                            val responded = addonStreamGroups.mapTo(hashSetOf()) { it.addonName }
+                            val pending = _uiState.value.sourceChips
+                                .filter { it.status == SourceChipStatus.LOADING && it.name !in responded }
+                                .map { it.name }
+                            com.nuvio.tv.core.player.AutoPlayPriority.isSettled(pick, allStreams, pending)
+                        }
+                    }
                 }
                 if (selectedAutoPlayStream != null) {
                     resolvedAutoPlayTarget = true

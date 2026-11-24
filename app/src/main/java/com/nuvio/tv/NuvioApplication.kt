@@ -102,6 +102,7 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
         val tag = getSharedPreferences("app_locale", Context.MODE_PRIVATE)
             .getString("locale_tag", null)
         LocaleCache.localeTag = tag ?: ""
+        com.nuvio.tv.core.player.AutoPlayPriority.init(this) // fork (sonnysini)
     }
 
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
