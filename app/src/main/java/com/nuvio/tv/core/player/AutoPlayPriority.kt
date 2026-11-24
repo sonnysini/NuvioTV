@@ -53,15 +53,31 @@ object AutoPlayPriority {
 
     /**
      * Runs [pick] on each priority level in turn and returns the first hit.
+     * Inside a level the streams are ordered by the quality in their label
+     * (best first, stable), so the mode pick lands on the best quality of that level.
      * Without configured levels it is exactly `pick(candidates)` (upstream behaviour).
      */
     fun cascade(candidates: List<Stream>, pick: (List<Stream>) -> Stream?): Stream? {
         if (!isActive || candidates.isEmpty()) return pick(candidates)
         val byLevel = candidates.groupBy { levelOf(it.addonName) }
         for (level in byLevel.keys.sorted()) {
-            pick(byLevel.getValue(level))?.let { return it }
+            val bestFirst = byLevel.getValue(level).sortedByDescending { qualityRank(it) }
+            pick(bestFirst)?.let { return it }
         }
         return null
+    }
+
+    private val QUALITY_TIERS = listOf(
+        4 to Regex("""(?<![a-z0-9])(2160p|4k|uhd)(?![a-z0-9])""", RegexOption.IGNORE_CASE),
+        3 to Regex("""(?<![a-z0-9])(1440p|2k|qhd)(?![a-z0-9])""", RegexOption.IGNORE_CASE),
+        2 to Regex("""(?<![a-z0-9])(1080p|fhd)(?![a-z0-9])""", RegexOption.IGNORE_CASE),
+        1 to Regex("""(?<![a-z0-9])720p(?![a-z0-9])""", RegexOption.IGNORE_CASE)
+    )
+
+    /** Quality declared in the stream label: 4 = 2160p/4K … 1 = 720p, 0 = lower/unknown. */
+    fun qualityRank(stream: Stream): Int {
+        val text = listOfNotNull(stream.name, stream.title, stream.description).joinToString(" ")
+        return QUALITY_TIERS.firstOrNull { (_, regex) -> regex.containsMatchIn(text) }?.first ?: 0
     }
 
     /**

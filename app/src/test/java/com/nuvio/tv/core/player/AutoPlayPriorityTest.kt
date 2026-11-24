@@ -108,6 +108,38 @@ class AutoPlayPriorityTest {
         assertFalse(AutoPlayPriority.isSettled(d, listOf(checking, d), emptyList()))
     }
 
+    @Test
+    fun `inside a level the best quality wins`() {
+        AutoPlayPriority.setLevel("A", 1)
+        AutoPlayPriority.setLevel("B", 1)
+        val a720 = stream("A", "a-720p")
+        val b1080 = stream("B", "b-1080p")
+        val a4k = stream("A", "a 4K HDR")
+        assertEquals(b1080, select(listOf(a720, b1080), StreamAutoPlayMode.REGEX_MATCH, "(2160p|4k|1080p|720p)"))
+        assertEquals(a4k, select(listOf(a720, b1080, a4k)))
+    }
+
+    @Test
+    fun `higher level wins over better quality on a lower level`() {
+        AutoPlayPriority.setLevel("A", 1)
+        AutoPlayPriority.setLevel("C", 3)
+        val a720 = stream("A", "a-720p")
+        val c1080 = stream("C", "c-1080p")
+        assertEquals(a720, select(listOf(c1080, a720), StreamAutoPlayMode.REGEX_MATCH, "(1080p|720p)"))
+    }
+
+    @Test
+    fun `same quality keeps upstream order and unknown quality goes last`() {
+        AutoPlayPriority.setLevel("A", 1)
+        AutoPlayPriority.setLevel("B", 1)
+        val aUnknown = stream("A", "a-sd")
+        val b1 = stream("B", "b1-1080p")
+        val b2 = stream("B", "b2-1080p")
+        assertEquals(b1, select(listOf(aUnknown, b1, b2)))
+        assertEquals(0, AutoPlayPriority.qualityRank(aUnknown))
+        assertEquals(4, AutoPlayPriority.qualityRank(stream("A", "Film.2160p.mkv")))
+    }
+
     private fun stream(
         addonName: String,
         name: String,
