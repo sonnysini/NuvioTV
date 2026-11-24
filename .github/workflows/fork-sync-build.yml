@@ -164,4 +164,4 @@ jobs:
           sed -i 's/^          //' notes.md
           args=("$FORK_TAG" --target fork-ci --title "NuvioTV $FORK_TAG" --notes-file notes.md)
           [ "$PRERELEASE" = "true" ] && args+=(--prerelease) || args+=(--latest)
-          gh release create "${args[@]}" "${apks[@]}" fork.patch
+          gh release create -R "$GITHUB_REPOSITORY" "${args[@]}" "${apks[@]}" fork.patch
