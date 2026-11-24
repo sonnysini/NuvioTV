@@ -109,14 +109,24 @@ class AutoPlayPriorityTest {
     }
 
     @Test
-    fun `inside a level the best quality wins`() {
+    fun `inside a level the source with the best first pick wins`() {
         AutoPlayPriority.setLevel("A", 1)
         AutoPlayPriority.setLevel("B", 1)
         val a720 = stream("A", "a-720p")
         val b1080 = stream("B", "b-1080p")
         val a4k = stream("A", "a 4K HDR")
         assertEquals(b1080, select(listOf(a720, b1080), StreamAutoPlayMode.REGEX_MATCH, "(2160p|4k|1080p|720p)"))
-        assertEquals(a4k, select(listOf(a720, b1080, a4k)))
+        // A's own order puts 720p first: its lower 4K is not promoted.
+        assertEquals(b1080, select(listOf(a720, b1080, a4k)))
+    }
+
+    @Test
+    fun `a single source keeps its own order`() {
+        AutoPlayPriority.setLevel("A", 1)
+        val a1080 = stream("A", "a-1080p cached")
+        val a4k = stream("A", "a-2160p")
+        assertEquals(a1080, select(listOf(a1080, a4k)))
+        assertEquals(a1080, select(listOf(a1080, a4k), StreamAutoPlayMode.REGEX_MATCH, "(2160p|1080p)"))
     }
 
     @Test

@@ -53,16 +53,17 @@ object AutoPlayPriority {
 
     /**
      * Runs [pick] on each priority level in turn and returns the first hit.
-     * Inside a level the streams are ordered by the quality in their label
-     * (best first, stable), so the mode pick lands on the best quality of that level.
+     * Each source keeps its own order (e.g. AIOStreams already sorts best-first):
+     * inside a level [pick] runs on every source separately, then among those
+     * per-source picks the best labelled quality wins (ties: upstream order).
      * Without configured levels it is exactly `pick(candidates)` (upstream behaviour).
      */
     fun cascade(candidates: List<Stream>, pick: (List<Stream>) -> Stream?): Stream? {
         if (!isActive || candidates.isEmpty()) return pick(candidates)
         val byLevel = candidates.groupBy { levelOf(it.addonName) }
         for (level in byLevel.keys.sorted()) {
-            val bestFirst = byLevel.getValue(level).sortedByDescending { qualityRank(it) }
-            pick(bestFirst)?.let { return it }
+            val perSource = byLevel.getValue(level).groupBy { it.addonName }.values.mapNotNull(pick)
+            perSource.maxByOrNull { qualityRank(it) }?.let { return it }
         }
         return null
     }
