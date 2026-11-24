@@ -144,6 +144,7 @@ class SourcePrefetchViewModel @Inject constructor(
         ) return
 
         val showFileSize = streamBadgeSettingsDataStore.settings.first().showFileSizeBadges
+        var cachedLink: com.nuvio.tv.data.local.CachedStreamLink? = null
 
         // "Reuse last link": the stream screen plays the cached link straight away.
         if (settings.streamReuseLastLinkEnabled) {
@@ -152,6 +153,7 @@ class SourcePrefetchViewModel @Inject constructor(
                 maxAgeMs = settings.streamReuseLastLinkCacheHours * 60L * 60L * 1000L
             )
             if (cached != null) {
+                cachedLink = cached
                 _state.value = SourcePrefetchState.Ready(
                     sourceName = cached.addonName ?: cached.streamName,
                     badges = emptyList(),
@@ -184,6 +186,9 @@ class SourcePrefetchViewModel @Inject constructor(
 
         var lastGroups: List<AddonStreams> = emptyList()
         var shown = _state.value is SourcePrefetchState.Ready
+        // The cached link carries no badges: once the search returns the same link,
+        // show it again with the stream's own badges.
+        var cachedLinkMatched = cachedLink == null
 
         suspend fun pick(groups: List<AddonStreams>): Stream? {
             val ordered = StreamAutoPlaySelector.orderAddonStreams(groups, installedAddonOrder, preferredServerNames)
@@ -222,7 +227,19 @@ class SourcePrefetchViewModel @Inject constructor(
             episode = t.episode,
             priorityBingeGroup = persistedBingeGroup
         ).collect { result ->
-            if (shown || result !is NetworkResult.Success) return@collect
+            if (result !is NetworkResult.Success) return@collect
+            val cached = cachedLink
+            if (!cachedLinkMatched && cached != null) {
+                result.data.asSequence().flatMap { it.streams.asSequence() }.firstOrNull { stream ->
+                    (cached.url.isNotBlank() && stream.url == cached.url) ||
+                        (cached.infoHash != null && stream.infoHash.equals(cached.infoHash, ignoreCase = true)) ||
+                        (cached.filename != null && stream.behaviorHints?.filename == cached.filename)
+                }?.let { match ->
+                    cachedLinkMatched = true
+                    show(match)
+                }
+            }
+            if (shown) return@collect
             lastGroups = result.data
             val responded = result.data.mapTo(hashSetOf()) { it.addonName }
             val pending = expectedSources - responded
@@ -305,7 +322,10 @@ fun SourcePrefetchInfo(
             )
             is SourcePrefetchState.Ready -> PrefetchLine(
                 indicator = { PrefetchCheck() },
-                title = current.sourceName,
+                title = listOfNotNull(
+                    current.sourceName,
+                    current.fileSizeBytes?.takeIf { current.showFileSizeBadge }?.let(::formatFileSize)
+                ).joinToString("  ·  "),
                 subtitle = null,
                 badges = current
             )
@@ -331,7 +351,7 @@ private fun PrefetchLine(
     ) {
         indicator?.invoke()
         Column(
-            modifier = Modifier.widthIn(max = 420.dp),
+            modifier = Modifier.widthIn(max = 540.dp),
             verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xxs)
         ) {
             Text(
@@ -352,17 +372,25 @@ private fun PrefetchLine(
                     maxLines = 1
                 )
             }
-            if (badges != null &&
-                (badges.badges.isNotEmpty() || (badges.showFileSizeBadge && badges.fileSizeBytes != null))
-            ) {
+            if (badges != null && badges.badges.isNotEmpty()) {
+                // File size is in the title line, so it is never cut off by many badges.
                 StreamBadgeChips(
                     badges = badges.badges,
-                    fileSizeBytes = badges.fileSizeBytes,
-                    showFileSizeBadge = badges.showFileSizeBadge,
+                    showFileSizeBadge = false,
                     animate = true
                 )
             }
         }
+    }
+}
+
+/** Same rounding as the stream list's size badge. */
+private fun formatFileSize(bytes: Long): String {
+    val gib = bytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
+    return if (gib >= 1.0) {
+        "${kotlin.math.round(gib * 10.0) / 10.0} GB"
+    } else {
+        "${kotlin.math.round(bytes.toDouble() / (1024.0 * 1024.0)).toInt()} MB"
     }
 }
 
