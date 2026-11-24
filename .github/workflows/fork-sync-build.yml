@@ -142,6 +142,7 @@ jobs:
           :app:testFullReleaseUnitTest
           --tests 'com.nuvio.tv.core.player.AutoPlayPriorityTest'
           --tests 'com.nuvio.tv.core.player.StreamAutoPlaySelectorTest'
+          --tests 'com.nuvio.tv.data.repository.StreamSearchSessionCacheForkTest'
           :app:assembleFullRelease --stacktrace
 
       - name: Publish release
