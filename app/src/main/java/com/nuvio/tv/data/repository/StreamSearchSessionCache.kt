@@ -103,6 +103,17 @@ internal class StreamSearchSessionCache(
             ?: ordered.firstNotNullOfOrNull { snapshotData(it.value) }
     }
 
+    /** Fork (sonnysini): cancels [key]'s search if it is still running; finished results stay. */
+    suspend fun cancelIncomplete(key: StreamSearchRequestKey) {
+        mutex.withLock {
+            val session = sessions[key] ?: return@withLock
+            if (session.completedAtMs == null && !session.state.value.isComplete) {
+                sessions.remove(key)
+                session.cancelAndComplete()
+            }
+        }
+    }
+
     private suspend fun acquireSession(
         key: StreamSearchRequestKey,
         forceRefresh: Boolean,

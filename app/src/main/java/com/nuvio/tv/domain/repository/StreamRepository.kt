@@ -56,4 +56,13 @@ interface StreamRepository {
         type: String,
         videoId: String
     ): NetworkResult<List<Stream>>
+
+    /** Fork (sonnysini): drops a search that is still running, e.g. a detail-page prefetch. */
+    suspend fun cancelStreamSearch(
+        type: String,
+        videoId: String,
+        season: Int?,
+        episode: Int?,
+        priorityBingeGroup: String?
+    ) {}
 }

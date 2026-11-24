@@ -2557,6 +2557,16 @@ private fun MetaDetailsContent(
             item(key = "hero", contentType = "hero") {
                 Box(modifier = Modifier.bringIntoViewResponder(heroNoScrollResponder)) {
                     HeroContentSection(
+                        forkHeroActionsEnd = {
+                            SourcePrefetchInfo(
+                                type = meta.apiType,
+                                videoId = heroVideo?.id ?: meta.id,
+                                contentId = meta.id,
+                                season = heroVideo?.season,
+                                episode = heroVideo?.episode,
+                                enabled = isPlayEnabled && !shufflePoolEmpty
+                            )
+                        },
                         meta = meta,
                         nextEpisode = nextEpisode,
                         nextToWatch = nextToWatch,

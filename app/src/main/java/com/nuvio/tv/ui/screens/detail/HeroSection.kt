@@ -133,7 +133,8 @@ fun HeroContentSection(
     onHeroActionFocused: () -> Unit = {},
     onPlayFocusRestored: () -> Unit = {},
     onShowFullDescription: () -> Unit = {},
-    onTruncationChanged: (Boolean) -> Unit = {}
+    onTruncationChanged: (Boolean) -> Unit = {},
+    forkHeroActionsEnd: @Composable () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isSeriesApi = remember(meta.apiType) {
@@ -338,6 +339,8 @@ fun HeroContentSection(
                                 onFocused = onHeroActionFocused
                             )
                         }
+
+                        forkHeroActionsEnd()
                     }
 
                     Spacer(modifier = Modifier.height(NuvioTheme.spacing.lg))

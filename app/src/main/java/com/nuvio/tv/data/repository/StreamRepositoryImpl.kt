@@ -150,6 +150,20 @@ class StreamRepositoryImpl @Inject constructor(
         buildStreamSearchRequestKey(captureSourceConfiguration(), type, videoId, season, episode)
     )
 
+    // Fork (sonnysini): see StreamRepository.cancelStreamSearch.
+    override suspend fun cancelStreamSearch(
+        type: String,
+        videoId: String,
+        season: Int?,
+        episode: Int?,
+        priorityBingeGroup: String?
+    ) = streamSearchSessions.cancelIncomplete(
+        buildStreamSearchRequestKey(
+            captureSourceConfiguration(), type, videoId, season, episode,
+            priorityBingeGroup = priorityBingeGroup
+        )
+    )
+
     private fun buildStreamSearchRequestKey(
         sourceConfiguration: StreamSourceConfigurationSnapshot,
         type: String,
