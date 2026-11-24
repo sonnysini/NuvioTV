@@ -327,7 +327,7 @@ class SourcePrefetchViewModel @Inject constructor(
 // The card lives in a non-focusable popup, so it never changes the D-pad navigation of the page.
 // ---------------------------------------------------------------------------------------------
 
-private val CardHeight = 68.dp
+private val CardHeight = 56.dp
 private val CardMarginEnd = 32.dp
 private val CardMarginTop = 20.dp
 private val CardGlass = Color(0xFF1C1C1E).copy(alpha = 0.72f)
@@ -500,12 +500,14 @@ private fun PrefetchCard(
     modifier: Modifier = Modifier,
     background: Color = CardGlass,
     startPadding: Dp = NuvioTheme.spacing.lg,
-    textAlpha: Float = 1f
+    textAlpha: Float = 1f,
+    height: Dp = CardHeight
 ) {
+    // Pill shape: it folds naturally into the round hero button.
     Row(
         modifier = modifier
-            .height(CardHeight)
-            .clip(RoundedCornerShape(NuvioTheme.radii.xl))
+            .height(height)
+            .clip(RoundedCornerShape(percent = 50))
             .background(background)
             .padding(start = startPadding, end = NuvioTheme.spacing.xl),
         verticalAlignment = Alignment.CenterVertically,
@@ -557,7 +559,6 @@ private fun FoldingCircle(
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     val buttonBg = NuvioTheme.colors.BackgroundCard
-    val cornerPx = with(density) { NuvioTheme.radii.xl.toPx() }
     val startPad = NuvioTheme.spacing.lg
     with(density) {
         val screenW = configuration.screenWidthDp.dp.toPx()
@@ -572,12 +573,11 @@ private fun FoldingCircle(
             // the check slides to the centre and loses its green.
             val fullW = if (cardWidthPx > 0) cardWidthPx.toFloat() else cardH
             val w = mix(fullW, cardH, t)
-            val radius = mix(cornerPx, cardH / 2f, t)
             Box(
                 modifier = Modifier
                     .offset { IntOffset((cardRight - w).toInt(), cardTop.toInt()) }
                     .size(w.toDp(), CardHeight)
-                    .clip(RoundedCornerShape(radius.toDp()))
+                    .clip(RoundedCornerShape(percent = 50))
                     .background(CardGlass)
             ) {
                 PrefetchCard(
@@ -616,7 +616,8 @@ private fun FoldingCircle(
 private fun ReopenedCard(slot: Rect, ready: SourcePrefetchState.Ready) {
     val density = LocalDensity.current
     val gap = with(density) { NuvioTheme.spacing.md.toPx() }
-    val cardH = with(density) { CardHeight.toPx() }
+    val pillHeight = NuvioTheme.spacing.xxxl
+    val cardH = with(density) { pillHeight.toPx() }
     val reveal = remember { Animatable(0f) }
     LaunchedEffect(Unit) { reveal.animateTo(1f, tween(260, easing = FastOutSlowInEasing)) }
     PrefetchCard(
@@ -624,6 +625,8 @@ private fun ReopenedCard(slot: Rect, ready: SourcePrefetchState.Ready) {
         title = readyTitle(ready),
         subtitle = null,
         ready = ready,
+        height = pillHeight,
+        startPadding = NuvioTheme.spacing.xl,
         modifier = Modifier
             .offset { IntOffset((slot.right + gap).toInt(), (slot.center.y - cardH / 2f).toInt()) }
             .graphicsLayer {
