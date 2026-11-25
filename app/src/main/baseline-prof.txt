@@ -37779,3 +37779,12 @@ Lretrofit2/http/DELETE;
 Lretrofit2/http/GET;
 Lretrofit2/http/Path;
 Lretrofit2/http/Url;
+HSPLcom/nuvio/tv/core/player/dvmkv/**->**(**)**
+HSPLcom/nuvio/tv/core/player/DolbyVision**->**(**)**
+HSPLcom/nuvio/tv/ui/screens/player/ForkPrewarmedDataSource;->**(**)**
+HSPLcom/nuvio/tv/ui/screens/player/TailBuffer;->**(**)**
+HSPLcom/nuvio/tv/ui/screens/player/RedirectReportingDataSource;->**(**)**
+HSPLandroidx/media3/extractor/DefaultExtractorInput;->**(**)**
+HSPLandroidx/media3/datasource/StatsDataSource;->**(**)**
+HSPLandroidx/media3/datasource/okhttp/OkHttpDataSource;->**(**)**
+HSPLandroidx/media3/exoplayer/source/ProgressiveMediaPeriod**->**(**)**

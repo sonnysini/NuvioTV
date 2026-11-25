@@ -47,7 +47,10 @@ internal object ForkLinkPrewarm {
 
     fun resolvedFor(url: String): String? {
         val entry = entries[url] ?: return null
-        if (SystemClock.elapsedRealtime() - entry.atMs > TTL_MS) {
+        // A url whose tail is still in memory keeps its resolved link: dropping one would send the
+        // player back through the redirect while the tail is served anyway. A dead link still falls
+        // back to the original one in ForkPrewarmedDataSource.
+        if (!tails.containsKey(url) && SystemClock.elapsedRealtime() - entry.atMs > TTL_MS) {
             entries.remove(url)
             return null
         }
@@ -289,6 +292,8 @@ internal class ForkPrewarmedDataSource(
                 return upstream.open(dataSpec.withUri(Uri.parse(resolved)))
                     .also { logOpen("resolved", dataSpec, it, startedAt) }
             } catch (e: IOException) {
+                // The loader was cancelled (seek, track change, release): not the link's fault.
+                if (isCancellation(e)) throw e
                 Log.w("ForkPrewarm", "resolved url failed (${e.javaClass.simpleName}), back to the original link")
                 ForkLinkPrewarm.forget(originalUrl)
                 runCatching { upstream.close() }
@@ -302,6 +307,16 @@ internal class ForkPrewarmedDataSource(
 
     companion object {
         private const val DIAG_TAG = "ForkDS"
+
+        internal fun isCancellation(e: Throwable): Boolean {
+            var cause: Throwable? = e
+            while (cause != null) {
+                if (cause is java.io.InterruptedIOException && cause !is java.net.SocketTimeoutException) return true
+                if (cause is InterruptedException) return true
+                cause = cause.cause
+            }
+            return Thread.currentThread().isInterrupted
+        }
         private val nextDsId = java.util.concurrent.atomic.AtomicInteger()
     }
 
