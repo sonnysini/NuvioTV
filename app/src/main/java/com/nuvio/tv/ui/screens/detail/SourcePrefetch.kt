@@ -103,6 +103,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -125,7 +126,7 @@ import kotlinx.coroutines.withContext
  */
 sealed interface SourcePrefetchState {
     data object Hidden : SourcePrefetchState
-    data class Searching(val level: Int?) : SourcePrefetchState
+    data class Searching(val level: Int?, val preparing: Boolean = false) : SourcePrefetchState
     data class Ready(
         val sourceName: String,
         val badges: List<StreamBadge>,
@@ -162,6 +163,10 @@ class SourcePrefetchViewModel @Inject constructor(
     private var bingeGroupOfTarget: String? = null
     private var job: Job? = null
     private var prewarmJob: Job? = null
+    // The check only appears once the picked link is also resolved and its tail prefetched.
+    private var pendingReady: SourcePrefetchState.Ready? = null
+    private var prewarmDone = false
+    private var startedAtMs = 0L
 
     fun start(type: String, videoId: String, contentId: String, season: Int?, episode: Int?) {
         val next = PrefetchTarget(type, videoId, contentId, season, episode)
@@ -171,6 +176,9 @@ class SourcePrefetchViewModel @Inject constructor(
         target = next
         job?.cancel()
         prewarmJob?.cancel()
+        pendingReady = null
+        prewarmDone = false
+        startedAtMs = android.os.SystemClock.elapsedRealtime()
         previous?.let { cancelSearch(it, previousBingeGroup) }
         _state.value = SourcePrefetchState.Hidden
         job = viewModelScope.launch { run(next) }
@@ -195,12 +203,15 @@ class SourcePrefetchViewModel @Inject constructor(
             )
             if (cached != null) {
                 cachedLink = cached
-                prewarm(cached.url, cached.headers)
-                _state.value = SourcePrefetchState.Ready(
-                    sourceName = cached.addonName ?: cached.streamName,
-                    badges = emptyList(),
-                    fileSizeBytes = cached.videoSize,
-                    showFileSizeBadge = showFileSize
+                publishReady(
+                    SourcePrefetchState.Ready(
+                        sourceName = cached.addonName ?: cached.streamName,
+                        badges = emptyList(),
+                        fileSizeBytes = cached.videoSize,
+                        showFileSizeBadge = showFileSize
+                    ),
+                    url = cached.url,
+                    headers = cached.headers
                 )
             }
         }
@@ -222,12 +233,12 @@ class SourcePrefetchViewModel @Inject constructor(
         bingeGroupOfTarget = persistedBingeGroup
 
         val expectedSources = (installedAddonOrder + serverSourceNames).toSet()
-        if (_state.value !is SourcePrefetchState.Ready) {
+        if (cachedLink == null) {
             _state.value = SourcePrefetchState.Searching(currentLevel(expectedSources))
         }
 
         var lastGroups: List<AddonStreams> = emptyList()
-        var shown = _state.value is SourcePrefetchState.Ready
+        var shown = cachedLink != null
         // The cached link carries no badges: once the search returns the same link,
         // show it again with the stream's own badges.
         var cachedLinkMatched = cachedLink == null
@@ -253,14 +264,15 @@ class SourcePrefetchViewModel @Inject constructor(
                     listOf(AddonStreams(addonName = stream.addonName, addonLogo = null, streams = listOf(stream)))
                 ).firstOrNull()?.streams?.firstOrNull() ?: stream
             }
-            if (cachedLink == null) {
-                stream.getStreamUrl()?.let { prewarm(it, stream.behaviorHints?.proxyHeaders?.request) }
-            }
-            _state.value = SourcePrefetchState.Ready(
-                sourceName = badged.addonName,
-                badges = badged.badges,
-                fileSizeBytes = badged.behaviorHints?.videoSize,
-                showFileSizeBadge = showFileSize
+            publishReady(
+                SourcePrefetchState.Ready(
+                    sourceName = badged.addonName,
+                    badges = badged.badges,
+                    fileSizeBytes = badged.behaviorHints?.videoSize,
+                    showFileSizeBadge = showFileSize
+                ),
+                url = stream.getStreamUrl(),
+                headers = stream.behaviorHints?.proxyHeaders?.request
             )
             shown = true
         }
@@ -306,15 +318,32 @@ class SourcePrefetchViewModel @Inject constructor(
     }
 
     /**
-     * Resolves the picked link in the background (see ForkLinkPrewarm), after a short dwell so
-     * quickly scrolling through pages does not resolve links nobody plays.
+     * Shows [ready] once the first link is prepared for the player (see ForkLinkPrewarm): resolved
+     * and its tail prefetched. Until then the card says "Preparo il flusso…". The preparation
+     * waits for a short dwell on the page, so scrolling through pages resolves nothing. A later
+     * Ready (the cached link getting its badges) only replaces the pending one.
      */
-    private fun prewarm(url: String, headers: Map<String, String>?) {
-        if (url.isBlank()) return
-        prewarmJob?.cancel()
+    private fun publishReady(ready: SourcePrefetchState.Ready, url: String?, headers: Map<String, String>?) {
+        if (prewarmDone) {
+            _state.value = ready
+            return
+        }
+        pendingReady = ready
+        if (prewarmJob?.isActive == true) return
+        if (url.isNullOrBlank()) {
+            prewarmDone = true
+            _state.value = ready
+            return
+        }
+        _state.value = SourcePrefetchState.Searching(level = null, preparing = true)
         prewarmJob = viewModelScope.launch {
-            delay(PREWARM_DWELL_MS)
-            com.nuvio.tv.ui.screens.player.ForkLinkPrewarm.prewarm(url, headers)
+            val waited = android.os.SystemClock.elapsedRealtime() - startedAtMs
+            if (waited < PREWARM_DWELL_MS) delay(PREWARM_DWELL_MS - waited)
+            withTimeoutOrNull(PREWARM_TIMEOUT_MS) {
+                com.nuvio.tv.ui.screens.player.ForkLinkPrewarm.prewarm(url, headers)
+            }
+            prewarmDone = true
+            pendingReady?.let { _state.value = it }
         }
     }
 
@@ -360,6 +389,7 @@ private const val COLLAPSE_MS = 350
 private const val FLY_MS = 600
 private const val NOT_FOUND_HOLD_MS = 3000L
 private const val PREWARM_DWELL_MS = 1500L
+private const val PREWARM_TIMEOUT_MS = 10_000L
 
 private enum class Phase { Card, Collapse, Fly, Landed, Gone }
 
@@ -500,7 +530,7 @@ private fun CardFor(state: SourcePrefetchState) {
         SourcePrefetchState.Hidden -> Box(Modifier.size(0.dp))
         is SourcePrefetchState.Searching -> PrefetchCard(
             indicator = { PrefetchSpinner() },
-            title = "Cerco fonti…",
+            title = if (state.preparing) "Preparo il flusso…" else "Cerco fonti…",
             subtitle = state.level?.let { "Livello $it" }
         )
         is SourcePrefetchState.Ready -> PrefetchCard(
