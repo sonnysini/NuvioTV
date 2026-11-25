@@ -4,6 +4,7 @@ import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.OptIn
+import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
@@ -27,10 +28,22 @@ internal object ForkLinkPrewarm {
     private const val TAG = "ForkPrewarm"
     private const val TTL_MS = 20 * 60_000L
     private const val MAX_ENTRIES = 32
+    /** Covers the Matroska Cues of big remuxes (seen up to 3.6 MB) and an MP4 moov at the end. */
+    internal const val TAIL_BYTES = 6 * 1024 * 1024
+    private const val MIN_TAIL_FILE_BYTES = 64L * 1024 * 1024
+    private const val MAX_TAILS = 2
 
     private data class Entry(val resolvedUrl: String, val atMs: Long)
 
     private val entries = ConcurrentHashMap<String, Entry>()
+    private val tails = ConcurrentHashMap<String, TailBuffer>()
+
+    fun tailFor(url: String): TailBuffer? = tails[url]
+
+    private fun keepTail(url: String, tail: TailBuffer) {
+        if (tails.size >= MAX_TAILS) tails.keys.filter { it != url }.forEach { tails.remove(it) }
+        tails[url] = tail
+    }
 
     fun resolvedFor(url: String): String? {
         val entry = entries[url] ?: return null
@@ -55,7 +68,7 @@ internal object ForkLinkPrewarm {
     suspend fun prewarm(rawUrl: String, rawHeaders: Map<String, String>?) {
         val request = PlayerMediaSourceFactory.normalizePlaybackRequest(rawUrl, rawHeaders)
         val url = request.url
-        if (!isPrewarmable(url) || resolvedFor(url) != null) return
+        if (!isPrewarmable(url) || tails.containsKey(url)) return
         val startedAt = SystemClock.elapsedRealtime()
         try {
             runInterruptible(Dispatchers.IO) {
@@ -65,7 +78,7 @@ internal object ForkLinkPrewarm {
                         header("User-Agent", PlayerMediaSourceFactory.DEFAULT_USER_AGENT)
                     }
                 }.build()
-                client.newCall(call).execute().use { response ->
+                val (finalUrl, totalLength) = client.newCall(call).execute().use { response ->
                     val finalUrl = response.request.url.toString()
                     val redirected = canonical(finalUrl) != canonical(url)
                     Log.i(
@@ -74,6 +87,32 @@ internal object ForkLinkPrewarm {
                             "ms=${SystemClock.elapsedRealtime() - startedAt} host=${response.request.url.host}"
                     )
                     if (response.isSuccessful && redirected) remember(url, finalUrl)
+                    val total = if (response.code == 206) totalFromContentRange(response.header("Content-Range")) else null
+                    finalUrl to total
+                }
+                // The tail holds the Matroska index the player reads before the first frame.
+                if (totalLength != null && totalLength >= MIN_TAIL_FILE_BYTES) {
+                    val tailStartedAt = SystemClock.elapsedRealtime()
+                    val start = totalLength - TAIL_BYTES
+                    val tailCall = call.newBuilder()
+                        .url(finalUrl)
+                        .header("Range", "bytes=$start-${totalLength - 1}")
+                        .build()
+                    client.newCall(tailCall).execute().use { response ->
+                        val range = response.header("Content-Range")
+                        val bytes = if (response.code == 206 &&
+                            range?.startsWith("bytes $start-") == true &&
+                            totalFromContentRange(range) == totalLength
+                        ) response.body?.bytes() else null
+                        if (bytes != null && bytes.size == TAIL_BYTES) {
+                            keepTail(url, TailBuffer(totalLength, bytes))
+                        }
+                        Log.i(
+                            TAG,
+                            "TAIL code=${response.code} kept=${bytes?.size == TAIL_BYTES} " +
+                                "ms=${SystemClock.elapsedRealtime() - tailStartedAt}"
+                        )
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -89,7 +128,39 @@ internal object ForkLinkPrewarm {
         return !path.endsWith(".m3u8") && !path.endsWith(".mpd")
     }
 
+    internal fun totalFromContentRange(header: String?): Long? =
+        header?.substringAfterLast('/', "")?.trim()?.toLongOrNull()?.takeIf { it > 0 }
+
     private fun canonical(url: String): String = url.toHttpUrlOrNull()?.toString() ?: url
+}
+
+/** The last bytes of a stream, kept in memory. Pure Kotlin so it can be unit tested. */
+internal class TailBuffer(val totalLength: Long, private val bytes: ByteArray) {
+    val start: Long = totalLength - bytes.size
+
+    /** True when a read of [length] bytes (-1 = to the end) at [position] lies entirely in the tail. */
+    fun covers(position: Long, length: Long): Boolean {
+        if (position < start || position >= totalLength) return false
+        return length < 0 || position + length <= totalLength
+    }
+
+    /** Copies up to [length] bytes at [position]; -1 at the end of the stream. */
+    fun copy(position: Long, target: ByteArray, offset: Int, length: Int): Int {
+        val n = count(position, length)
+        if (n <= 0) return -1
+        System.arraycopy(bytes, (position - start).toInt(), target, offset, n)
+        return n
+    }
+
+    fun copy(position: Long, target: java.nio.ByteBuffer, length: Int): Int {
+        val n = count(position, minOf(length, target.remaining()))
+        if (n <= 0) return -1
+        target.put(bytes, (position - start).toInt(), n)
+        return n
+    }
+
+    private fun count(position: Long, length: Int): Int =
+        if (position < start) 0 else minOf(length.toLong(), totalLength - position).toInt()
 }
 
 /**
@@ -103,14 +174,63 @@ internal class ForkPrewarmedDataSource(
     private val originalUrl: String
 ) : DataSource by upstream, androidx.media3.common.ByteBufferDataReader {
 
+    // Set while an open is served from the prefetched tail instead of the network.
+    private var tail: TailBuffer? = null
+    private var tailPosition = 0L
+    private var tailRemaining = 0L
+    private var tailUri: Uri? = null
+
     override fun supportsByteBufferRead(): Boolean =
         upstream is androidx.media3.common.ByteBufferDataReader && upstream.supportsByteBufferRead()
 
-    override fun read(buffer: java.nio.ByteBuffer, length: Int): Int =
-        (upstream as androidx.media3.common.ByteBufferDataReader).read(buffer, length)
+    override fun read(buffer: java.nio.ByteBuffer, length: Int): Int {
+        val t = tail ?: return (upstream as androidx.media3.common.ByteBufferDataReader).read(buffer, length)
+        if (tailRemaining <= 0) return C.RESULT_END_OF_INPUT
+        val n = t.copy(tailPosition, buffer, minOf(length.toLong(), tailRemaining).toInt())
+        if (n < 0) return C.RESULT_END_OF_INPUT
+        tailPosition += n
+        tailRemaining -= n
+        return n
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        val t = tail ?: return upstream.read(buffer, offset, length)
+        if (length == 0) return 0
+        if (tailRemaining <= 0) return C.RESULT_END_OF_INPUT
+        val n = t.copy(tailPosition, buffer, offset, minOf(length.toLong(), tailRemaining).toInt())
+        if (n < 0) return C.RESULT_END_OF_INPUT
+        tailPosition += n
+        tailRemaining -= n
+        return n
+    }
+
+    override fun getUri(): Uri? = tailUri ?: upstream.uri
+
+    override fun getResponseHeaders(): Map<String, List<String>> =
+        if (tail != null) emptyMap() else upstream.responseHeaders
+
+    override fun close() {
+        if (tail != null) {
+            tail = null
+            tailUri = null
+            return
+        }
+        upstream.close()
+    }
 
     override fun open(dataSpec: DataSpec): Long {
         if (dataSpec.uri.toString() != originalUrl) return upstream.open(dataSpec)
+        ForkLinkPrewarm.tailFor(originalUrl)
+            ?.takeIf { it.covers(dataSpec.position, dataSpec.length) }
+            ?.let { t ->
+                val available = t.totalLength - dataSpec.position
+                tail = t
+                tailPosition = dataSpec.position
+                tailRemaining = if (dataSpec.length == C.LENGTH_UNSET.toLong()) available else dataSpec.length
+                tailUri = Uri.parse(ForkLinkPrewarm.resolvedFor(originalUrl) ?: originalUrl)
+                Log.i("ForkPrewarm", "TAIL_HIT pos=${dataSpec.position} len=$tailRemaining")
+                return tailRemaining
+            }
         ForkLinkPrewarm.resolvedFor(originalUrl)?.let { resolved ->
             try {
                 return upstream.open(dataSpec.withUri(Uri.parse(resolved)))
