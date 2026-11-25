@@ -342,6 +342,13 @@ private const val NOT_FOUND_HOLD_MS = 3000L
 
 private enum class Phase { Card, Collapse, Fly, Landed, Gone }
 
+/** Titles whose card already folded into the hero button during this app session. */
+private object LandedTargets {
+    private val keys = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    fun contains(key: String) = key in keys
+    fun add(key: String) { keys += key }
+}
+
 private fun mix(a: Float, b: Float, t: Float) = a + (b - a) * t
 
 @Composable
@@ -362,10 +369,10 @@ fun SourcePrefetchInfo(
     if (!enabled) return
 
     val targetKey = "$type|$videoId|$season|$episode"
-    // Survives a round trip to the player: coming back shows the button straight away.
-    var landedKey by rememberSaveable { mutableStateOf<String?>(null) }
+    // Process-wide: leaving the page and opening the same title again (a new back-stack entry,
+    // so rememberSaveable would start over) shows the button straight away, no fold again.
     var phase by remember(targetKey) {
-        mutableStateOf(if (landedKey == targetKey) Phase.Landed else Phase.Card)
+        mutableStateOf(if (LandedTargets.contains(targetKey)) Phase.Landed else Phase.Card)
     }
     val progress = remember(targetKey) { Animatable(0f) }
     var lastReady by remember(targetKey) { mutableStateOf<SourcePrefetchState.Ready?>(null) }
@@ -386,7 +393,7 @@ fun SourcePrefetchInfo(
                 progress.snapTo(0f)
                 progress.animateTo(1f, tween(FLY_MS, easing = FastOutSlowInEasing))
                 phase = Phase.Landed
-                landedKey = targetKey
+                LandedTargets.add(targetKey)
             }
             SourcePrefetchState.NotFound -> if (phase == Phase.Card) {
                 delay(NOT_FOUND_HOLD_MS)
