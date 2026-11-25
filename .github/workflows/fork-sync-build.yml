@@ -143,6 +143,7 @@ jobs:
           --tests 'com.nuvio.tv.core.player.AutoPlayPriorityTest'
           --tests 'com.nuvio.tv.core.player.StreamAutoPlaySelectorTest'
           --tests 'com.nuvio.tv.data.repository.StreamSearchSessionCacheForkTest'
+          --tests 'com.nuvio.tv.ui.screens.player.ForkTailBufferTest'
           :app:assembleFullRelease --stacktrace
 
       - name: Publish release
