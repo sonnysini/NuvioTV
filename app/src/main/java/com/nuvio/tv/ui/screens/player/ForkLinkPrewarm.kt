@@ -180,13 +180,58 @@ internal class ForkPrewarmedDataSource(
     private var tailRemaining = 0L
     private var tailUri: Uri? = null
 
+    // Diagnostics (tag ForkDS): one line per open and per close, with read counts and timings.
+    private val dsId = nextDsId.incrementAndGet()
+    private var openedAtMs = 0L
+    private var firstReadAtMs = 0L
+    private var arrayReads = 0
+    private var bufferReads = 0
+    private var bytesRead = 0L
+    private var lastCloseAtMs = 0L
+
+    private fun countRead(n: Int, byteBuffer: Boolean) {
+        if (firstReadAtMs == 0L) firstReadAtMs = SystemClock.elapsedRealtime()
+        if (byteBuffer) bufferReads++ else arrayReads++
+        if (n > 0) bytesRead += n
+    }
+
+    private fun logOpen(kind: String, dataSpec: DataSpec, length: Long, startedAt: Long) {
+        val now = SystemClock.elapsedRealtime()
+        val gap = if (lastCloseAtMs > 0) now - lastCloseAtMs else -1
+        Log.i(
+            DIAG_TAG,
+            "OPEN#$dsId $kind pos=${dataSpec.position} reqLen=${dataSpec.length} len=$length " +
+                "openMs=${now - startedAt} gapSinceCloseMs=$gap bb=${supportsByteBufferRead()} " +
+                "thread=${Thread.currentThread().name}"
+        )
+        openedAtMs = now
+        firstReadAtMs = 0L
+        arrayReads = 0
+        bufferReads = 0
+        bytesRead = 0L
+    }
+
+    private fun logClose(kind: String) {
+        val now = SystemClock.elapsedRealtime()
+        val firstRead = if (firstReadAtMs > 0) firstReadAtMs - openedAtMs else -1
+        Log.i(
+            DIAG_TAG,
+            "CLOSE#$dsId $kind openForMs=${if (openedAtMs > 0) now - openedAtMs else -1} " +
+                "firstReadMs=$firstRead arrayReads=$arrayReads bufferReads=$bufferReads bytes=$bytesRead"
+        )
+        lastCloseAtMs = now
+        openedAtMs = 0L
+    }
+
     override fun supportsByteBufferRead(): Boolean =
         upstream is androidx.media3.common.ByteBufferDataReader && upstream.supportsByteBufferRead()
 
     override fun read(buffer: java.nio.ByteBuffer, length: Int): Int {
         val t = tail ?: return (upstream as androidx.media3.common.ByteBufferDataReader).read(buffer, length)
-        if (tailRemaining <= 0) return C.RESULT_END_OF_INPUT
+            .also { countRead(it, byteBuffer = true) }
+        if (tailRemaining <= 0) return C.RESULT_END_OF_INPUT.also { countRead(it, byteBuffer = true) }
         val n = t.copy(tailPosition, buffer, minOf(length.toLong(), tailRemaining).toInt())
+        countRead(n, byteBuffer = true)
         if (n < 0) return C.RESULT_END_OF_INPUT
         tailPosition += n
         tailRemaining -= n
@@ -194,10 +239,11 @@ internal class ForkPrewarmedDataSource(
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
-        val t = tail ?: return upstream.read(buffer, offset, length)
+        val t = tail ?: return upstream.read(buffer, offset, length).also { countRead(it, byteBuffer = false) }
         if (length == 0) return 0
-        if (tailRemaining <= 0) return C.RESULT_END_OF_INPUT
+        if (tailRemaining <= 0) return C.RESULT_END_OF_INPUT.also { countRead(it, byteBuffer = false) }
         val n = t.copy(tailPosition, buffer, offset, minOf(length.toLong(), tailRemaining).toInt())
+        countRead(n, byteBuffer = false)
         if (n < 0) return C.RESULT_END_OF_INPUT
         tailPosition += n
         tailRemaining -= n
@@ -211,15 +257,21 @@ internal class ForkPrewarmedDataSource(
 
     override fun close() {
         if (tail != null) {
+            logClose("tail")
             tail = null
             tailUri = null
             return
         }
+        val startedAt = SystemClock.elapsedRealtime()
         upstream.close()
+        if (openedAtMs > 0) logClose("net closeMs=${SystemClock.elapsedRealtime() - startedAt}")
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        if (dataSpec.uri.toString() != originalUrl) return upstream.open(dataSpec)
+        val startedAt = SystemClock.elapsedRealtime()
+        if (dataSpec.uri.toString() != originalUrl) {
+            return upstream.open(dataSpec).also { logOpen("other", dataSpec, it, startedAt) }
+        }
         ForkLinkPrewarm.tailFor(originalUrl)
             ?.takeIf { it.covers(dataSpec.position, dataSpec.length) }
             ?.let { t ->
@@ -229,11 +281,13 @@ internal class ForkPrewarmedDataSource(
                 tailRemaining = if (dataSpec.length == C.LENGTH_UNSET.toLong()) available else dataSpec.length
                 tailUri = Uri.parse(ForkLinkPrewarm.resolvedFor(originalUrl) ?: originalUrl)
                 Log.i("ForkPrewarm", "TAIL_HIT pos=${dataSpec.position} len=$tailRemaining")
+                logOpen("tail", dataSpec, tailRemaining, startedAt)
                 return tailRemaining
             }
         ForkLinkPrewarm.resolvedFor(originalUrl)?.let { resolved ->
             try {
                 return upstream.open(dataSpec.withUri(Uri.parse(resolved)))
+                    .also { logOpen("resolved", dataSpec, it, startedAt) }
             } catch (e: IOException) {
                 Log.w("ForkPrewarm", "resolved url failed (${e.javaClass.simpleName}), back to the original link")
                 ForkLinkPrewarm.forget(originalUrl)
@@ -242,7 +296,13 @@ internal class ForkPrewarmedDataSource(
         }
         val length = upstream.open(dataSpec)
         upstream.uri?.toString()?.let { ForkLinkPrewarm.remember(originalUrl, it) }
+        logOpen("original", dataSpec, length, startedAt)
         return length
+    }
+
+    companion object {
+        private const val DIAG_TAG = "ForkDS"
+        private val nextDsId = java.util.concurrent.atomic.AtomicInteger()
     }
 
     class Factory(
