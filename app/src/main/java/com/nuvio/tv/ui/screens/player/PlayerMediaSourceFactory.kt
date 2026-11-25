@@ -254,7 +254,11 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
             httpDataSourceFactory
         }
         val progressiveUpstreamFactory: DataSource.Factory =
-            RedirectReportingDataSource.Factory(networkProgressiveFactory, url) { resolvedUrl ->
+            RedirectReportingDataSource.Factory(
+                if (isHls || isDash) networkProgressiveFactory
+                else ForkPrewarmedDataSource.Factory(networkProgressiveFactory, url), // fork
+                url
+            ) { resolvedUrl ->
                 onStreamRedirected?.invoke(url, resolvedUrl)
             }
 

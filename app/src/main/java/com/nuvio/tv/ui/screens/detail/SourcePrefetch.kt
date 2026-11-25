@@ -161,6 +161,7 @@ class SourcePrefetchViewModel @Inject constructor(
     private var target: PrefetchTarget? = null
     private var bingeGroupOfTarget: String? = null
     private var job: Job? = null
+    private var prewarmJob: Job? = null
 
     fun start(type: String, videoId: String, contentId: String, season: Int?, episode: Int?) {
         val next = PrefetchTarget(type, videoId, contentId, season, episode)
@@ -169,6 +170,7 @@ class SourcePrefetchViewModel @Inject constructor(
         val previousBingeGroup = bingeGroupOfTarget
         target = next
         job?.cancel()
+        prewarmJob?.cancel()
         previous?.let { cancelSearch(it, previousBingeGroup) }
         _state.value = SourcePrefetchState.Hidden
         job = viewModelScope.launch { run(next) }
@@ -193,6 +195,7 @@ class SourcePrefetchViewModel @Inject constructor(
             )
             if (cached != null) {
                 cachedLink = cached
+                prewarm(cached.url, cached.headers)
                 _state.value = SourcePrefetchState.Ready(
                     sourceName = cached.addonName ?: cached.streamName,
                     badges = emptyList(),
@@ -250,6 +253,9 @@ class SourcePrefetchViewModel @Inject constructor(
                     listOf(AddonStreams(addonName = stream.addonName, addonLogo = null, streams = listOf(stream)))
                 ).firstOrNull()?.streams?.firstOrNull() ?: stream
             }
+            if (cachedLink == null) {
+                stream.getStreamUrl()?.let { prewarm(it, stream.behaviorHints?.proxyHeaders?.request) }
+            }
             _state.value = SourcePrefetchState.Ready(
                 sourceName = badged.addonName,
                 badges = badged.badges,
@@ -299,6 +305,19 @@ class SourcePrefetchViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Resolves the picked link in the background (see ForkLinkPrewarm), after a short dwell so
+     * quickly scrolling through pages does not resolve links nobody plays.
+     */
+    private fun prewarm(url: String, headers: Map<String, String>?) {
+        if (url.isBlank()) return
+        prewarmJob?.cancel()
+        prewarmJob = viewModelScope.launch {
+            delay(PREWARM_DWELL_MS)
+            com.nuvio.tv.ui.screens.player.ForkLinkPrewarm.prewarm(url, headers)
+        }
+    }
+
     /** Highest-priority level among sources still searching, null without levels. */
     private fun currentLevel(pendingSources: Collection<String>): Int? {
         if (!AutoPlayPriority.isActive) return null
@@ -317,6 +336,7 @@ class SourcePrefetchViewModel @Inject constructor(
 
     override fun onCleared() {
         job?.cancel()
+        prewarmJob?.cancel()
         target?.let { cancelSearch(it, bingeGroupOfTarget) }
         super.onCleared()
     }
@@ -339,6 +359,7 @@ private const val READY_HOLD_MS = 2500L
 private const val COLLAPSE_MS = 350
 private const val FLY_MS = 600
 private const val NOT_FOUND_HOLD_MS = 3000L
+private const val PREWARM_DWELL_MS = 1500L
 
 private enum class Phase { Card, Collapse, Fly, Landed, Gone }
 
