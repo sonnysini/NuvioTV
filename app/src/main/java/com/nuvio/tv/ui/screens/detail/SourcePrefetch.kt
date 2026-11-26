@@ -339,8 +339,26 @@ class SourcePrefetchViewModel @Inject constructor(
         prewarmJob = viewModelScope.launch {
             val waited = android.os.SystemClock.elapsedRealtime() - startedAtMs
             if (waited < PREWARM_DWELL_MS) delay(PREWARM_DWELL_MS - waited)
-            withTimeoutOrNull(PREWARM_TIMEOUT_MS) {
+            val placeholder = withTimeoutOrNull(PREWARM_TIMEOUT_MS) {
                 com.nuvio.tv.ui.screens.player.ForkLinkPrewarm.prewarm(url, headers)
+            }
+            if (placeholder != null) {
+                // AIOStreams placeholder video (torrent not ready...): the link is now marked dead,
+                // so the autoplay pick skips it. Drop it from "reuse last link" too and pick again;
+                // the finished search is shared, so this sends no new requests to the addons.
+                android.util.Log.w("ForkPrewarm", "detail pick was a placeholder ($placeholder), picking the next source")
+                target?.let { t ->
+                    val key = "${t.type.lowercase()}|${t.videoId}"
+                    if (streamLinkCacheDataStore.getValid(key, Long.MAX_VALUE)?.url == url) {
+                        streamLinkCacheDataStore.remove(key)
+                    }
+                }
+                pendingReady = null
+                prewarmDone = false
+                val t = target ?: return@launch
+                job?.cancel()
+                job = viewModelScope.launch { run(t) }
+                return@launch
             }
             prewarmDone = true
             pendingReady?.let { _state.value = it }

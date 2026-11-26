@@ -105,6 +105,8 @@ object StreamAutoPlaySelector {
         preferBingeGroupInSelection: Boolean = false,
         bingeGroupOnly: Boolean = false
     ): Stream? {
+        // Fork (sonnysini): links seen redirecting to an AIOStreams placeholder video are skipped.
+        val streams = ForkDeadLinks.filterAlive(streams)
         if (streams.isEmpty()) return null
 
         val effectiveSource = if (!AppFeaturePolicy.pluginsEnabled && source == StreamAutoPlaySource.ENABLED_PLUGINS_ONLY) {

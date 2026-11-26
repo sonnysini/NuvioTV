@@ -8,6 +8,7 @@ import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import com.nuvio.tv.core.player.ForkDeadLinks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -67,14 +68,18 @@ internal object ForkLinkPrewarm {
         entries.remove(url)
     }
 
-    /** Follows the link's redirects with the player's own client; never throws. */
-    suspend fun prewarm(rawUrl: String, rawHeaders: Map<String, String>?) {
+    /**
+     * Follows the link's redirects with the player's own client; never throws. Returns the
+     * AIOStreams placeholder name ("downloading", ...) when the link ends on one: the link is then
+     * marked dead (see [ForkDeadLinks]) and nothing is kept for it.
+     */
+    suspend fun prewarm(rawUrl: String, rawHeaders: Map<String, String>?): String? {
         val request = PlayerMediaSourceFactory.normalizePlaybackRequest(rawUrl, rawHeaders)
         val url = request.url
-        if (!isPrewarmable(url) || tails.containsKey(url)) return
+        if (!isPrewarmable(url) || tails.containsKey(url)) return null
         val startedAt = SystemClock.elapsedRealtime()
-        try {
-            runInterruptible(Dispatchers.IO) {
+        return try {
+            runInterruptible(Dispatchers.IO) prewarm@{
                 val client = PlayerPlaybackNetworking.createHttpClient(request.headers)
                 val call = Request.Builder().url(url).header("Range", "bytes=0-0").apply {
                     if (request.headers.keys.none { it.equals("User-Agent", ignoreCase = true) }) {
@@ -89,6 +94,13 @@ internal object ForkLinkPrewarm {
                         "PREWARM code=${response.code} redirected=$redirected " +
                             "ms=${SystemClock.elapsedRealtime() - startedAt} host=${response.request.url.host}"
                     )
+                    val placeholder = ForkDeadLinks.placeholderName(finalUrl)
+                    if (placeholder != null) {
+                        Log.w(TAG, "PLACEHOLDER $placeholder: link marked dead")
+                        ForkDeadLinks.markDead(rawUrl, url)
+                        forget(url)
+                        return@prewarm placeholder
+                    }
                     if (response.isSuccessful && redirected) remember(url, finalUrl)
                     val total = if (response.code == 206) totalFromContentRange(response.header("Content-Range")) else null
                     finalUrl to total
@@ -117,10 +129,12 @@ internal object ForkLinkPrewarm {
                         )
                     }
                 }
+                null
             }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             Log.w(TAG, "PREWARM failed after ${SystemClock.elapsedRealtime() - startedAt}ms: ${e.javaClass.simpleName}")
+            null
         }
     }
 
@@ -165,6 +179,12 @@ internal class TailBuffer(val totalLength: Long, private val bytes: ByteArray) {
     private fun count(position: Long, length: Int): Int =
         if (position < start) 0 else minOf(length.toLong(), totalLength - position).toInt()
 }
+
+/**
+ * The link redirected to an AIOStreams placeholder video. A FileNotFoundException, so the default
+ * load error policy fails the source at once instead of retrying the same placeholder.
+ */
+internal class ForkPlaceholderException(message: String) : java.io.FileNotFoundException(message)
 
 /**
  * Opens [originalUrl] at its resolved location when one is known (prewarmed by the detail page or
@@ -300,7 +320,16 @@ internal class ForkPrewarmedDataSource(
             }
         }
         val length = upstream.open(dataSpec)
-        upstream.uri?.toString()?.let { ForkLinkPrewarm.remember(originalUrl, it) }
+        val landedOn = upstream.uri?.toString()
+        ForkDeadLinks.placeholderName(landedOn)?.let { name ->
+            // AIOStreams answered with its placeholder video: fail the source so the upstream
+            // "fallback to next source" can take over, and keep autoplay away from it.
+            Log.w("ForkPrewarm", "PLACEHOLDER $name while opening: link marked dead")
+            ForkDeadLinks.markDead(originalUrl)
+            runCatching { upstream.close() }
+            throw ForkPlaceholderException(ForkDeadLinks.describe(name))
+        }
+        landedOn?.let { ForkLinkPrewarm.remember(originalUrl, it) }
         logOpen("original", dataSpec, length, startedAt)
         return length
     }
