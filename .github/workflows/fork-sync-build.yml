@@ -145,6 +145,7 @@ jobs:
           --tests 'com.nuvio.tv.data.repository.StreamSearchSessionCacheForkTest'
           --tests 'com.nuvio.tv.ui.screens.player.ForkTailBufferTest'
           --tests 'com.nuvio.tv.core.player.ForkDeadLinksTest'
+          --tests 'com.nuvio.tv.core.player.dvmkv.MatroskaEarlyDtsScanWindowTest'
           :app:assembleFullRelease --stacktrace
 
       - name: Publish release
