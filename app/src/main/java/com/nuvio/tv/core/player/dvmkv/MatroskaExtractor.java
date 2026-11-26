@@ -613,6 +613,8 @@ public class MatroskaExtractor implements Extractor {
 
   // Reused scratch for the early DTS peek scan; grows on demand up to the scan budget.
   private byte[] earlyDtsScanBuffer = new byte[64 * 1024];
+  // NuvioTV fork: bytes of the scan window already peeked into earlyDtsScanBuffer[0..n).
+  private int earlyDtsScanLength;
 
   // The track corresponding to the current TrackEntry element, or null.
   @Nullable private Track currentTrack;
@@ -2927,11 +2929,13 @@ public class MatroskaExtractor implements Extractor {
     if (!hasWaitingDtsTrack()) {
       return;
     }
+    earlyDtsScanLength = 0;
     try {
       scanElementSequence(input, 0, MAX_EARLY_DTS_SCAN_BYTES);
     } catch (IOException | RuntimeException e) {
       Log.w(TAG, "Early DTS analysis aborted, keeping provisional mime: " + e.getMessage());
     } finally {
+      earlyDtsScanLength = 0;
       try {
         input.resetPeekPosition();
       } catch (RuntimeException ignored) {
@@ -2957,7 +2961,32 @@ public class MatroskaExtractor implements Extractor {
       }
       earlyDtsScanBuffer = Arrays.copyOf(earlyDtsScanBuffer, newSize);
     }
-    return input.peekFully(earlyDtsScanBuffer, 0, length, true);
+    int peeked = extendScanWindow(input, earlyDtsScanBuffer, earlyDtsScanLength, length);
+    if (peeked < 0) {
+      return false;
+    }
+    earlyDtsScanLength = peeked;
+    return true;
+  }
+
+  /**
+   * NuvioTV fork: grows a peek window that mirrors the input from the read position, so that
+   * {@code buffer[i]} is the byte at read position + i. {@link ExtractorInput#peekFully} is
+   * relative (it continues from the current peek position), so only the missing tail is peeked.
+   * Peeking {@code length} bytes at offset 0 on every call instead re-downloads ever larger
+   * ranges and misaligns the buffer (seen: 15.5 MB read before the Cues seek on a DTS remux).
+   *
+   * @return the new window length, or -1 if the input ended before any of the missing bytes.
+   */
+  static int extendScanWindow(ExtractorInput input, byte[] buffer, int peeked, int length)
+      throws IOException {
+    if (length <= peeked) {
+      return peeked;
+    }
+    if (!input.peekFully(buffer, peeked, length - peeked, true)) {
+      return -1;
+    }
+    return length;
   }
 
   /**
