@@ -34,6 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -411,11 +412,16 @@ private const val PREWARM_TIMEOUT_MS = 10_000L
 
 private enum class Phase { Card, Collapse, Fly, Landed, Gone }
 
-/** Titles whose card already folded into the hero button during this app session. */
+/**
+ * Titles whose card already folded into the hero button during this app session, with the last
+ * source shown: opening the title again shows the button at once, while the new page checks the
+ * link again in the background.
+ */
 private object LandedTargets {
-    private val keys = java.util.Collections.synchronizedSet(mutableSetOf<String>())
-    fun contains(key: String) = key in keys
-    fun add(key: String) { keys += key }
+    private val ready = java.util.concurrent.ConcurrentHashMap<String, SourcePrefetchState.Ready>()
+    fun contains(key: String) = ready.containsKey(key)
+    fun readyFor(key: String): SourcePrefetchState.Ready? = ready[key]
+    fun add(key: String, value: SourcePrefetchState.Ready) { ready[key] = value }
 }
 
 private fun mix(a: Float, b: Float, t: Float) = a + (b - a) * t
@@ -444,10 +450,16 @@ fun SourcePrefetchInfo(
         mutableStateOf(if (LandedTargets.contains(targetKey)) Phase.Landed else Phase.Card)
     }
     val progress = remember(targetKey) { Animatable(0f) }
-    var lastReady by remember(targetKey) { mutableStateOf<SourcePrefetchState.Ready?>(null) }
+    var lastReady by remember(targetKey) { mutableStateOf(LandedTargets.readyFor(targetKey)) }
     LaunchedEffect(state) {
-        (state as? SourcePrefetchState.Ready)?.let { lastReady = it }
+        (state as? SourcePrefetchState.Ready)?.let { ready ->
+            lastReady = ready
+            if (LandedTargets.contains(targetKey)) LandedTargets.add(targetKey, ready)
+        }
     }
+    // Shown under the circle for a couple of frames before the popup goes away, so the landing
+    // never flashes an empty slot (popup and page are separate windows).
+    var buttonUnderCircle by remember(targetKey) { mutableStateOf(false) }
 
     // Keyed on the kind of state, not the value: a Ready that only refreshes its badges must
     // not restart (and freeze) the fold animation.
@@ -461,12 +473,17 @@ fun SourcePrefetchInfo(
                 phase = Phase.Fly
                 progress.snapTo(0f)
                 progress.animateTo(1f, tween(FLY_MS, easing = FastOutSlowInEasing))
+                buttonUnderCircle = true
+                repeat(2) { withFrameNanos { } }
                 phase = Phase.Landed
-                LandedTargets.add(targetKey)
+                lastReady?.let { LandedTargets.add(targetKey, it) }
             }
             SourcePrefetchState.NotFound -> if (phase == Phase.Card) {
                 delay(NOT_FOUND_HOLD_MS)
                 phase = Phase.Gone
+            } else if (phase == Phase.Landed) {
+                // The source remembered from the last visit is gone: no button.
+                lastReady = null
             }
             is SourcePrefetchState.Searching -> if (phase == Phase.Gone) phase = Phase.Card
             SourcePrefetchState.Hidden -> Unit
@@ -476,7 +493,7 @@ fun SourcePrefetchInfo(
     var slotBounds by remember { mutableStateOf<Rect?>(null) }
     var cardWidthPx by remember(targetKey) { mutableStateOf(0) }
     var buttonFocused by remember { mutableStateOf(false) }
-    val landed = phase == Phase.Landed && lastReady != null
+    val landed = (phase == Phase.Landed || buttonUnderCircle) && lastReady != null
 
     // The slot at the end of the hero actions: invisible and not focusable until the circle lands.
     PrefetchButton(
@@ -672,7 +689,7 @@ private fun FoldingCircle(
                     .offset { IntOffset((cardRight - w).toInt(), cardTop.toInt()) }
                     .size(w.toDp(), CardHeight)
                     .clip(RoundedCornerShape(percent = 50))
-                    .background(CardGlass)
+                    .background(lerp(CardGlass, buttonBg, t))
             ) {
                 PrefetchCard(
                     indicator = { CheckBubble(fill = lerp(CheckGreen, Color.Transparent, t), size = 28.dp) },
@@ -696,7 +713,7 @@ private fun FoldingCircle(
                     .offset { IntOffset((cx - size / 2f).toInt(), (cy - size / 2f).toInt()) }
                     .size(size.toDp())
                     .clip(CircleShape)
-                    .background(lerp(CardGlass, buttonBg, t)),
+                    .background(buttonBg),
                 contentAlignment = Alignment.Center
             ) {
                 CheckBubble(fill = Color.Transparent, size = mix(28f, 34f, t).dp)
