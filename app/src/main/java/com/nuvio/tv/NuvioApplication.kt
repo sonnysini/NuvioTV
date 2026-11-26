@@ -92,6 +92,8 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         // Before super.onCreate(): Hilt creates injected services there, and the budget is read once.
         MemoryBudget.init(this)
+        // Fork: libass/fontconfig keeps its font cache under TMPDIR; apps have none, so it rescanned all system fonts on every ASS track (~1 s).
+        android.system.Os.setenv("TMPDIR", cacheDir.absolutePath, false); android.util.Log.i("ForkFonts", "TMPDIR=" + android.system.Os.getenv("TMPDIR"))
         super.onCreate()
         SentryInitializer.start(this, sentrySettingsDataStore)
         PluginRuntimeHooks.onApplicationCreate(this)
