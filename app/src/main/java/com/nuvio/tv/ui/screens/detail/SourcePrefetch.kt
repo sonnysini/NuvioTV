@@ -47,7 +47,10 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -92,6 +95,7 @@ import com.nuvio.tv.domain.model.enabledAddons
 import com.nuvio.tv.domain.repository.AddonRepository
 import com.nuvio.tv.domain.repository.StreamRepository
 import com.nuvio.tv.core.network.NetworkResult
+import com.nuvio.tv.ui.components.StreamBadgeChips
 import com.nuvio.tv.ui.theme.NuvioTheme
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -201,10 +205,6 @@ class SourcePrefetchViewModel @Inject constructor(
             )
             if (cached != null) {
                 cachedLink = cached
-                com.nuvio.tv.ui.components.ForkPlaybackSources.remember(
-                    cached.url,
-                    com.nuvio.tv.ui.components.ForkSourceTagInfo(cached.addonName ?: cached.streamName, emptyList(), cached.videoSize)
-                )
                 publishReady(
                     SourcePrefetchState.Ready(
                         sourceName = cached.addonName ?: cached.streamName,
@@ -266,10 +266,6 @@ class SourcePrefetchViewModel @Inject constructor(
                     listOf(AddonStreams(addonName = stream.addonName, addonLogo = null, streams = listOf(stream)))
                 ).firstOrNull()?.streams?.firstOrNull() ?: stream
             }
-            com.nuvio.tv.ui.components.ForkPlaybackSources.remember(
-                stream.getStreamUrl(),
-                com.nuvio.tv.ui.components.ForkSourceTagInfo(badged.addonName, badged.badges, badged.behaviorHints?.videoSize)
-            )
             publishReady(
                 SourcePrefetchState.Ready(
                     sourceName = badged.addonName,
@@ -577,8 +573,7 @@ private fun CardFor(state: SourcePrefetchState) {
             indicator = { CheckBubble(fill = CheckGreen, size = 28.dp) },
             title = readyTitle(state),
             subtitle = null,
-            ready = state,
-            animateTags = true
+            ready = state
         )
         SourcePrefetchState.NotFound -> PrefetchCard(
             indicator = null,
@@ -603,8 +598,7 @@ private fun PrefetchCard(
     background: Color = CardGlass,
     startPadding: Dp = NuvioTheme.spacing.lg,
     textAlpha: Float = 1f,
-    height: Dp = CardHeight,
-    animateTags: Boolean = false
+    height: Dp = CardHeight
 ) {
     // Pill shape: it folds naturally into the round hero button.
     Row(
@@ -617,15 +611,7 @@ private fun PrefetchCard(
         horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
     ) {
         indicator?.invoke()
-        if (ready != null) {
-            // Fork tags: badges, then size, then add-on (same row as the player loading screen).
-            com.nuvio.tv.ui.components.ForkSourceTagRow(
-                info = com.nuvio.tv.ui.components.ForkSourceTagInfo(ready.sourceName, ready.badges, ready.fileSizeBytes),
-                showFileSize = ready.showFileSizeBadge,
-                animate = animateTags,
-                modifier = Modifier.graphicsLayer { alpha = textAlpha }
-            )
-        } else Column(
+        Column(
             modifier = Modifier
                 .widthIn(max = 560.dp)
                 .graphicsLayer { alpha = textAlpha },
@@ -644,6 +630,25 @@ private fun PrefetchCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = NuvioTheme.colors.TextSecondary,
                     maxLines = 1
+                )
+            }
+            if (ready != null && ready.badges.isNotEmpty()) {
+                // File size is in the title line, so it is never cut off by many badges.
+                // StreamBadgeChips fills the available width; measured unbounded here so the
+                // pill is as wide as its badges (capped by the column's max width).
+                StreamBadgeChips(
+                    badges = ready.badges,
+                    showFileSizeBadge = false,
+                    animate = true,
+                    modifier = Modifier
+                        .layout { measurable, constraints ->
+                            val placeable = measurable.measure(
+                                constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity)
+                            )
+                            val width = placeable.width.coerceAtMost(constraints.maxWidth)
+                            layout(width, placeable.height) { placeable.place(0, 0) }
+                        }
+                        .clipToBounds()
                 )
             }
         }

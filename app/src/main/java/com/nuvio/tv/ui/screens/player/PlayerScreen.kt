@@ -1358,7 +1358,6 @@ fun PlayerScreen(
                 uiState.loadingMessage.takeIf { uiState.showPlayerLoadingStatus || uiState.isTorrentStream }
             },
             progress = uiState.loadingProgress.takeUnless { uiState.isEpisodeAutoPlaySearching },
-            forkSourceTags = { com.nuvio.tv.ui.components.ForkLoadingSourceTags(uiState.currentStreamUrl) },
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2f)
