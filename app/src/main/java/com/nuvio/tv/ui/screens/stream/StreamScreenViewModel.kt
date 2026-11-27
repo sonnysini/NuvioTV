@@ -1696,6 +1696,7 @@ class StreamScreenViewModel @Inject constructor(
             audioDelayLanguage = stream.behaviorHints?.audioDelayLanguage
         )
         StreamSidecarSubtitles.set(playbackUrlFor(playbackInfo), stream.subtitles)
+        com.nuvio.tv.ui.components.ForkPlaybackSources.remember(playbackInfo.url, stream)
 
         val url = playbackInfo.url
         if (saveLastLink && !url.isNullOrBlank() && !playbackInfo.isExternal) {

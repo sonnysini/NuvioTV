@@ -60,7 +60,8 @@ fun LoadingOverlay(
     title: String? = null,
     message: String? = null,
     progress: Float? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    forkSourceTags: (@Composable () -> Unit)? = null
 ) {
     var logoLoadFailed by remember(logoUrl) { mutableStateOf(false) }
     val showLogo = !logoUrl.isNullOrBlank() && !logoLoadFailed
@@ -290,6 +291,14 @@ fun LoadingOverlay(
                             }
                         }
                     }
+                }
+                // Fork: picked source tags under the loading message.
+                if (forkSourceTags != null) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .offset(y = if (showLogo || !title.isNullOrBlank()) 151.dp else 117.dp)
+                    ) { forkSourceTags() }
                 }
             }
         }
