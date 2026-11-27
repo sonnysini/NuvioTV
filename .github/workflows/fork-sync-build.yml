@@ -125,6 +125,10 @@ jobs:
           printf '%s' "$LOCAL_PROPERTIES_BASE64" | base64 --decode > local.properties
           {
             echo
+            # Public API base URLs used by the official build (not secrets).
+            echo "INTRODB_API_URL=https://api.introdb.app/"
+            echo "PARENTAL_GUIDE_API_URL=https://api.tiffara.com/"
+            echo "IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/"
             echo "DOVI_NATIVE_ENABLED=true"
             echo "DOVI_EXTRACTOR_HOOK_READY=true"
             echo "DOVI_ENABLE_REAL_LINK=true"
