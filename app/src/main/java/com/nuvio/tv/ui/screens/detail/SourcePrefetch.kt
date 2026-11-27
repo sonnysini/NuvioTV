@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -656,8 +657,9 @@ private fun PrefetchCard(
 
 /**
  * The card folding into a circle (Collapse) and the circle flying into the hero slot (Fly).
- * Green only while the card is open: it fades away while folding, so the circle lands with
- * the look of the other hero icons.
+ * Green check only while the card is open ("found"): while folding the green fades and the
+ * check turns into a white bolt ("stream ready"), so it can't be mistaken for the hero's
+ * own library check and lands with the look of the other hero icons.
  */
 @Composable
 private fun FoldingCircle(
@@ -681,7 +683,7 @@ private fun FoldingCircle(
 
         if (phase == Phase.Collapse) {
             // The card keeps its right edge and shrinks to a circle; text fades out first,
-            // the check slides to the centre and loses its green.
+            // the check slides to the centre, loses its green and turns into the bolt.
             val fullW = if (cardWidthPx > 0) cardWidthPx.toFloat() else cardH
             val w = mix(fullW, cardH, t)
             Box(
@@ -692,7 +694,7 @@ private fun FoldingCircle(
                     .background(lerp(CardGlass, buttonBg, t))
             ) {
                 PrefetchCard(
-                    indicator = { CheckBubble(fill = lerp(CheckGreen, Color.Transparent, t), size = 28.dp) },
+                    indicator = { CheckBubble(fill = lerp(CheckGreen, Color.Transparent, t), size = 28.dp, bolt = t) },
                     title = ready?.let(::readyTitle).orEmpty(),
                     subtitle = null,
                     ready = ready,
@@ -716,7 +718,7 @@ private fun FoldingCircle(
                     .background(buttonBg),
                 contentAlignment = Alignment.Center
             ) {
-                CheckBubble(fill = Color.Transparent, size = mix(28f, 34f, t).dp)
+                CheckBubble(fill = Color.Transparent, size = mix(28f, 34f, t).dp, bolt = 1f)
             }
         }
     }
@@ -777,7 +779,7 @@ private fun PrefetchButton(visible: Boolean, onFocusChanged: (Boolean) -> Unit, 
         shape = IconButtonDefaults.shape(shape = CircleShape)
     ) {
         Icon(
-            imageVector = Icons.Default.Check,
+            imageVector = Icons.Default.Bolt,
             contentDescription = "Fonte pronta",
             modifier = Modifier.size(NuvioTheme.spacing.xl)
         )
@@ -785,19 +787,30 @@ private fun PrefetchButton(visible: Boolean, onFocusChanged: (Boolean) -> Unit, 
 }
 
 @Composable
-private fun CheckBubble(fill: Color, size: Dp) {
+private fun CheckBubble(fill: Color, size: Dp, bolt: Float = 0f) {
     Box(
         modifier = Modifier
             .size(size)
             .background(fill, CircleShape),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            imageVector = Icons.Default.Check,
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier.size(size * 0.72f)
-        )
+        // Cross-fade check -> bolt (bolt = 0 check only, 1 bolt only).
+        if (bolt < 1f) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 1f - bolt),
+                modifier = Modifier.size(size * 0.72f)
+            )
+        }
+        if (bolt > 0f) {
+            Icon(
+                imageVector = Icons.Default.Bolt,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = bolt),
+                modifier = Modifier.size(size * 0.8f)
+            )
+        }
     }
 }
 
